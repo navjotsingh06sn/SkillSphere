@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { ArrowDownRight, ArrowRight, Bell, BriefcaseBusiness, Building2, Check, ChevronDown, CircleUserRound, Eye, EyeOff, FileText, LayoutDashboard, LockKeyhole, LogOut, Menu, Moon, Palette, Search, ShieldCheck, Sparkles, Sun, Users, Volume2, VolumeX, X, UploadCloud } from "lucide-react";
+import { ArrowDownRight, ArrowRight, Bell, BriefcaseBusiness, Building2, Check, ChevronDown, CircleUserRound, Eye, EyeOff, FileText, LayoutDashboard, LockKeyhole, LogOut, Menu, Moon, Palette, Search, ShieldCheck, Sparkles, Sun, Trash2, Users, Volume2, VolumeX, X, UploadCloud } from "lucide-react";
 import { Link, NavLink, Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, json } from "./api.js";
 
@@ -148,24 +148,52 @@ function RecruiterHome() {
   if (!data && !error) return <Loading />;
   return <><PageHeader eyebrow="RECRUITER WORKSPACE" title="Hiring, with a clearer view." description="Manage your roles and keep an eye on candidate activity." action={<Link className="button button-primary" to="/recruiter/jobs">Manage roles <ArrowRight size={16} /></Link>} /><Notice>{error}</Notice>{data && <><div className="stat-grid"><Stat label="Total jobs" value={data.total_jobs} icon={BriefcaseBusiness} /><Stat label="Active jobs" value={data.active_jobs} icon={Check} /><Stat label="Applicants" value={data.total_applicants} icon={Users} /><Stat label="Interviews" value={data.interviews} icon={ArrowDownRight} /></div><section className="panel quick-panel"><div className="panel-heading"><div><span className="eyebrow">NEXT STEPS</span><h3>Keep hiring in motion</h3></div></div><div className="quick-links"><Link to="/recruiter/company"><Building2 />Complete company profile<ArrowRight /></Link><Link to="/recruiter/jobs"><BriefcaseBusiness />Post or update a role<ArrowRight /></Link><Link to="/recruiter/applicants"><Users />Review applicants<ArrowRight /></Link></div></section></>}</>;
 }
+function profileEntryText(entry) {
+  if (typeof entry === "string") return entry;
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return "";
+  if (typeof entry.text === "string") return entry.text;
+  return Object.entries(entry).map(([key, value]) => {
+    const text = Array.isArray(value) ? value.join(", ") : value;
+    return text === null || text === undefined || text === "" ? "" : `${key}: ${text}`;
+  }).filter(Boolean).join(" · ");
+}
+function profileEntriesText(entries) {
+  return (entries || []).map(profileEntryText).filter(Boolean).join("\n");
+}
+function profileEntriesFromText(text, existingEntries = []) {
+  const unusedEntries = [...existingEntries];
+  return text.split(/\r?\n/).map(line => line.trim()).filter(Boolean).map(line => {
+    const existingIndex = unusedEntries.findIndex(entry =>
+      entry && typeof entry === "object" && !Array.isArray(entry) && profileEntryText(entry) === line
+    );
+    if (existingIndex < 0) return { text: line };
+    return unusedEntries.splice(existingIndex, 1)[0];
+  });
+}
 function candidateForm(data) {
   return {
     ...data,
     skills_text: (data.skills || []).join(", "),
-    education_text: JSON.stringify(data.education || [], null, 2),
-    experience_text: JSON.stringify(data.experience || [], null, 2),
-    projects_text: JSON.stringify(data.projects || [], null, 2),
-    certifications_text: JSON.stringify(data.certifications || [], null, 2),
+    education_text: profileEntriesText(data.education),
+    experience_text: profileEntriesText(data.experience),
+    projects_text: profileEntriesText(data.projects),
+    certifications_text: profileEntriesText(data.certifications),
   };
 }
 function ProfilePage() {
   const [form, setForm] = useState(null); const [error, setError] = useState(""); const [saved, setSaved] = useState("");
+  const [scanNotice, setScanNotice] = useState("");
   const [documentFile, setDocumentFile] = useState(null); const [scanning, setScanning] = useState(false); const documentInput = useRef(null);
   useEffect(() => { api("/candidates/profile").then(data => setForm(candidateForm(data))).catch(e => setError(e.message)); }, []);
+  useEffect(() => {
+    if (!scanNotice) return;
+    const timeout = window.setTimeout(() => setScanNotice(""), 4000);
+    return () => window.clearTimeout(timeout);
+  }, [scanNotice]);
   async function scanDocument(e) {
     e.preventDefault();
     if (!documentFile) return;
-    setError(""); setSaved(""); setScanning(true);
+    setError(""); setSaved(""); setScanNotice(""); setScanning(true);
     try {
       const body = new FormData(); body.append("file", documentFile);
       const resume = await api("/resumes/upload", { method: "POST", body });
@@ -183,12 +211,16 @@ function ProfilePage() {
         full_name: extracted.full_name || current.full_name,
         phone: extracted.phone || current.phone,
         skills_text: extracted.skills?.length ? extracted.skills.join(", ") : current.skills_text,
-        education_text: extracted.education?.length ? JSON.stringify(extracted.education, null, 2) : current.education_text,
-        experience_text: extracted.experience?.length ? JSON.stringify(extracted.experience, null, 2) : current.experience_text,
-        projects_text: extracted.projects?.length ? JSON.stringify(extracted.projects, null, 2) : current.projects_text,
-        certifications_text: extracted.certifications?.length ? JSON.stringify(extracted.certifications, null, 2) : current.certifications_text,
+        education: extracted.education?.length ? extracted.education : current.education,
+        experience: extracted.experience?.length ? extracted.experience : current.experience,
+        projects: extracted.projects?.length ? extracted.projects : current.projects,
+        certifications: extracted.certifications?.length ? extracted.certifications : current.certifications,
+        education_text: extracted.education?.length ? profileEntriesText(extracted.education) : current.education_text,
+        experience_text: extracted.experience?.length ? profileEntriesText(extracted.experience) : current.experience_text,
+        projects_text: extracted.projects?.length ? profileEntriesText(extracted.projects) : current.projects_text,
+        certifications_text: extracted.certifications?.length ? profileEntriesText(extracted.certifications) : current.certifications_text,
       }));
-      setSaved("Document scanned. Review the extracted details below, then save your profile.");
+      setScanNotice("Document scanned. Review the extracted details below, then save your profile.");
       setDocumentFile(null);
       if (documentInput.current) documentInput.current.value = "";
     } catch (err) {
@@ -199,8 +231,26 @@ function ProfilePage() {
   }
   async function save(e) {
     e.preventDefault(); setError(""); setSaved("");
-    try { const body = { ...form, skills: form.skills_text.split(",").map(s => s.trim()).filter(Boolean) }; delete body.skills_text; for (const key of ["education", "experience", "projects", "certifications"]) { body[key] = JSON.parse(form[key + "_text"] || "[]"); if (!Array.isArray(body[key])) throw new Error(key + " must be a JSON list."); delete body[key + "_text"]; } const data = await api("/candidates/profile", { method: "PUT", body: json(body) }); setForm(candidateForm(data)); setSaved("Your profile has been saved."); }
-    catch (err) { setError(err.message); }
+    try {
+      const body = {
+        full_name: form.full_name,
+        phone: form.phone,
+        location: form.location,
+        headline: form.headline,
+        summary: form.summary,
+        skills: form.skills_text.split(",").map(skill => skill.trim()).filter(Boolean),
+        education: profileEntriesFromText(form.education_text || "", form.education || []),
+        experience: profileEntriesFromText(form.experience_text || "", form.experience || []),
+        projects: profileEntriesFromText(form.projects_text || "", form.projects || []),
+        certifications: profileEntriesFromText(form.certifications_text || "", form.certifications || []),
+        linkedin: form.linkedin,
+        github: form.github,
+        portfolio: form.portfolio,
+      };
+      const data = await api("/candidates/profile", { method: "PUT", body: json(body) });
+      setForm(candidateForm(data));
+      setSaved("Your profile has been saved.");
+    } catch (err) { setError(err.message); }
   }
   if (!form) return <><PageHeader eyebrow="CANDIDATE PROFILE" title="Your profile" /><Notice>{error}</Notice>{!error && <Loading />}</>;
   return <><PageHeader eyebrow="CANDIDATE PROFILE" title="Tell your story." description="Keep the details recruiters use to understand your strengths up to date." />
@@ -210,8 +260,8 @@ function ProfilePage() {
       <input ref={documentInput} aria-label="Choose a profile document" type="file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" onChange={e => setDocumentFile(e.target.files?.[0] || null)} />
       <button disabled={!documentFile || scanning} className="button button-primary">{scanning ? "Scanning…" : "Upload & scan"}</button>
     </form>
-    <Notice>{error}</Notice><Notice type="success">{saved}</Notice>
-    <form className="panel edit-form" onSubmit={save}><div className="form-grid"><label>Full name<input value={form.full_name || ""} onChange={e => setForm({ ...form, full_name: e.target.value })} /></label><label>Phone<input value={form.phone || ""} onChange={e => setForm({ ...form, phone: e.target.value })} /></label><label>Location<input value={form.location || ""} onChange={e => setForm({ ...form, location: e.target.value })} placeholder="City, country or remote" /></label><label>Professional headline<input value={form.headline || ""} onChange={e => setForm({ ...form, headline: e.target.value })} placeholder="e.g. Frontend developer" /></label><label className="wide-field">Skills <small>Separate skills with commas</small><input value={form.skills_text} onChange={e => setForm({ ...form, skills_text: e.target.value })} placeholder="React, Python, MongoDB" /></label><label className="wide-field">Career summary<textarea rows="5" value={form.summary || ""} onChange={e => setForm({ ...form, summary: e.target.value })} /></label><label className="wide-field">Education entries <small>JSON list with institution and degree fields</small><textarea rows="4" value={form.education_text} onChange={e => setForm({ ...form, education_text: e.target.value })} /></label><label className="wide-field">Experience entries <small>JSON list of role, company, dates, and description</small><textarea rows="4" value={form.experience_text} onChange={e => setForm({ ...form, experience_text: e.target.value })} /></label><label className="wide-field">Projects <small>JSON list of project name, description, and link</small><textarea rows="3" value={form.projects_text} onChange={e => setForm({ ...form, projects_text: e.target.value })} /></label><label className="wide-field">Certifications <small>JSON list of certification name and issuer</small><textarea rows="3" value={form.certifications_text} onChange={e => setForm({ ...form, certifications_text: e.target.value })} /></label><label>LinkedIn<input value={form.linkedin || ""} onChange={e => setForm({ ...form, linkedin: e.target.value })} /></label><label>GitHub<input value={form.github || ""} onChange={e => setForm({ ...form, github: e.target.value })} /></label><label>Portfolio<input value={form.portfolio || ""} onChange={e => setForm({ ...form, portfolio: e.target.value })} /></label></div><button className="button button-primary">Save profile <Check size={16} /></button></form>
+    <Notice>{error}</Notice><Notice type="success">{scanNotice}</Notice><Notice type="success">{saved}</Notice>
+    <form className="panel edit-form" onSubmit={save}><div className="form-grid"><label>Full name<input value={form.full_name || ""} onChange={e => setForm({ ...form, full_name: e.target.value })} /></label><label>Phone<input value={form.phone || ""} onChange={e => setForm({ ...form, phone: e.target.value })} /></label><label>Location<input value={form.location || ""} onChange={e => setForm({ ...form, location: e.target.value })} placeholder="City, country or remote" /></label><label>Professional headline<input value={form.headline || ""} onChange={e => setForm({ ...form, headline: e.target.value })} placeholder="e.g. Frontend developer" /></label><label className="wide-field">Skills <small>Separate skills with commas</small><input value={form.skills_text} onChange={e => setForm({ ...form, skills_text: e.target.value })} placeholder="React, Python, MongoDB" /></label><label className="wide-field">Career summary<textarea rows="5" value={form.summary || ""} onChange={e => setForm({ ...form, summary: e.target.value })} /></label><label className="wide-field">Education entries <small>One entry per line</small><textarea rows="4" value={form.education_text} onChange={e => setForm({ ...form, education_text: e.target.value })} placeholder="Bachelor of Science, Example University" /></label><label className="wide-field">Experience entries <small>One entry per line</small><textarea rows="4" value={form.experience_text} onChange={e => setForm({ ...form, experience_text: e.target.value })} placeholder="Software developer, Example Company" /></label><label className="wide-field">Projects <small>One project per line</small><textarea rows="3" value={form.projects_text} onChange={e => setForm({ ...form, projects_text: e.target.value })} placeholder="Password Strength Checker" /></label><label className="wide-field">Certifications <small>One certification per line</small><textarea rows="3" value={form.certifications_text} onChange={e => setForm({ ...form, certifications_text: e.target.value })} placeholder="CSS Certification – Great Learning (2024)" /></label><label>LinkedIn<input value={form.linkedin || ""} onChange={e => setForm({ ...form, linkedin: e.target.value })} /></label><label>GitHub<input value={form.github || ""} onChange={e => setForm({ ...form, github: e.target.value })} /></label><label>Portfolio<input value={form.portfolio || ""} onChange={e => setForm({ ...form, portfolio: e.target.value })} /></label></div><button className="button button-primary">Save profile <Check size={16} /></button></form>
   </>;
 }
 function JobsPage() {
@@ -245,11 +295,32 @@ function JobDetailPage() {
 }
 function ResumePage() {
   const [items, setItems] = useState([]); const [selected, setSelected] = useState(null); const [file, setFile] = useState(null); const [error, setError] = useState(""); const [message, setMessage] = useState("");
+  const [ocrFile, setOcrFile] = useState(null); const [ocrBusy, setOcrBusy] = useState(false); const [ocrError, setOcrError] = useState(""); const [ocrResult, setOcrResult] = useState(null);
   async function load() { try { setItems(await api("/resumes")); } catch (e) { setError(e.message); } }
   useEffect(() => { load(); }, []);
   async function upload(e) {
     e.preventDefault(); if (!file) return; const form = new FormData(); form.append("file", file);
     try { const item = await api("/resumes/upload", { method: "POST", body: form }); setMessage("Resume uploaded. Text extraction is processing."); setFile(null); await load(); setSelected(item); } catch (err) { setError(err.message); }
+  }
+  async function deleteResume(item) {
+    if (!window.confirm(`Permanently delete "${item.original_name}"?`)) return;
+    setError(""); setMessage("");
+    try {
+      await api("/resumes/" + item.id, { method: "DELETE" });
+      setItems(current => current.filter(resume => resume.id !== item.id));
+      setSelected(current => current?.id === item.id ? null : current);
+      setMessage("Resume deleted.");
+    } catch (err) { setError(err.message); }
+  }
+  async function extractWithPaddleOCR(e) {
+    e.preventDefault(); if (!ocrFile) return;
+    const formElement = e.currentTarget; const form = new FormData(); form.append("file", ocrFile);
+    setOcrBusy(true); setOcrError(""); setOcrResult(null);
+    try {
+      const result = await api("/ocr/extract", { method: "POST", body: form });
+      setOcrResult(result); setOcrFile(null); formElement.reset();
+    } catch (err) { setOcrError(err.message); }
+    finally { setOcrBusy(false); }
   }
   async function saveReview(e) {
     e.preventDefault(); if (!selected) return;
@@ -259,7 +330,8 @@ function ResumePage() {
   }
   return <><PageHeader eyebrow="YOUR RESUME" title="Bring your experience with you." description="Upload a resume, review extracted details, and keep the original file private." /><Notice>{error}</Notice><Notice type="success">{message}</Notice>
     <form className="upload-box" onSubmit={upload}><div className="upload-icon"><UploadCloud size={23} /></div><div><b>Upload a resume</b><p>PDF, JPG, JPEG or PNG · up to 10 MB</p></div><input type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={e => setFile(e.target.files?.[0] || null)} /><button disabled={!file} className="button button-primary">Upload</button></form>
-    <div className="panel"><div className="panel-heading"><div><span className="eyebrow">RESUME HISTORY</span><h3>Your files</h3></div><button className="button button-outline" onClick={load}>Refresh</button></div>{items.length ? <div className="resume-list">{items.map(item => <button className={"resume-row " + (selected?.id === item.id ? "resume-selected" : "")} key={item.id} onClick={() => setSelected(item)}><span className="resume-icon"><FileText size={18} /></span><span><b>{item.original_name}</b><small>{new Date(item.created_at).toLocaleString()}</small></span><span className={"status status-" + item.status}>{item.status}</span></button>)}</div> : <Empty title="No resume uploaded" text="Upload a resume to start reviewing your profile details." />}</div>
+    <section className="panel resume-ocr-panel"><div className="panel-heading"><div><span className="eyebrow">QUICK OCR · NOT SAVED</span><h3>Extract text with PaddleOCR</h3></div></div><p className="resume-ocr-description">Review text from a selectable or scanned PDF, or an image. This temporary upload is not added to your resume history.</p><form className="resume-ocr-form" onSubmit={extractWithPaddleOCR}><input aria-label="Choose a file for quick OCR" type="file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" onChange={e => setOcrFile(e.target.files?.[0] || null)} /><button disabled={!ocrFile || ocrBusy} className="button button-primary">{ocrBusy ? <><span className="spinner" />Extracting…</> : "Extract text"}</button></form><Notice>{ocrError}</Notice>{ocrResult && <div className="resume-ocr-result"><div className="resume-ocr-result-meta"><b>{ocrResult.filename}</b><span>{ocrResult.extraction_method.replaceAll("_", " ")}{ocrResult.page_count ? " · " + ocrResult.page_count + (ocrResult.page_count === 1 ? " page" : " pages") : ""}</span></div><label>Extracted text<textarea rows="10" readOnly value={ocrResult.extracted_text} /></label></div>}</section>
+    <div className="panel"><div className="panel-heading"><div><span className="eyebrow">RESUME HISTORY</span><h3>Your files</h3></div><button className="button button-outline" onClick={load}>Refresh</button></div>{items.length ? <div className="resume-list">{items.map(item => <div className="resume-row" key={item.id}><button type="button" className={"resume-row-select " + (selected?.id === item.id ? "resume-selected" : "")} onClick={() => setSelected(item)}><span className="resume-icon"><FileText size={18} /></span><span><b>{item.original_name}</b><small>{new Date(item.created_at).toLocaleString()}</small></span><span className={"status status-" + item.status}>{item.status}</span></button><button type="button" className="button button-outline resume-delete" onClick={() => deleteResume(item)} aria-label={"Delete " + item.original_name} title="Delete resume"><Trash2 size={15} /><span>Delete</span></button></div>)}</div> : <Empty title="No resume uploaded" text="Upload a resume to start reviewing your profile details." />}</div>
     {selected && <form className="panel edit-form review-form" onSubmit={saveReview}><div className="panel-heading"><div><span className="eyebrow">REVIEW EXTRACTED DETAILS</span><h3>{selected.original_name}</h3></div><span className={"status status-" + selected.status}>{selected.status}</span></div>{selected.status === "processing" && <p>Text extraction is processing. Refresh in a moment.</p>}{selected.error && <Notice>{selected.error} For scanned files, install Tesseract OCR.</Notice>}
       {selected.extracted_data && <><div className="form-grid"><label>Name<input value={selected.extracted_data.full_name || ""} onChange={e => setSelected({ ...selected, extracted_data: { ...selected.extracted_data, full_name: e.target.value } })} /></label><label>Email<input value={selected.extracted_data.email || ""} onChange={e => setSelected({ ...selected, extracted_data: { ...selected.extracted_data, email: e.target.value } })} /></label><label>Phone<input value={selected.extracted_data.phone || ""} onChange={e => setSelected({ ...selected, extracted_data: { ...selected.extracted_data, phone: e.target.value } })} /></label><label>Location<input value={selected.extracted_data.location || ""} onChange={e => setSelected({ ...selected, extracted_data: { ...selected.extracted_data, location: e.target.value } })} /></label><label className="wide-field">Skills (comma separated)<input value={selected.extracted_data.skills_text ?? (selected.extracted_data.skills || []).join(", ")} onChange={e => setSelected({ ...selected, extracted_data: { ...selected.extracted_data, skills_text: e.target.value } })} /></label><label className="wide-field">Education details <small>Review extracted lines as a JSON list</small><textarea rows="3" value={selected.extracted_data.education_text ?? JSON.stringify(selected.extracted_data.education || [], null, 2)} onChange={e => setSelected({ ...selected, extracted_data: { ...selected.extracted_data, education_text: e.target.value } })} /></label><label className="wide-field">Experience details<textarea rows="3" value={selected.extracted_data.experience_text ?? JSON.stringify(selected.extracted_data.experience || [], null, 2)} onChange={e => setSelected({ ...selected, extracted_data: { ...selected.extracted_data, experience_text: e.target.value } })} /></label><label className="wide-field">Projects<textarea rows="3" value={selected.extracted_data.projects_text ?? JSON.stringify(selected.extracted_data.projects || [], null, 2)} onChange={e => setSelected({ ...selected, extracted_data: { ...selected.extracted_data, projects_text: e.target.value } })} /></label><label className="wide-field">Certifications<textarea rows="3" value={selected.extracted_data.certifications_text ?? JSON.stringify(selected.extracted_data.certifications || [], null, 2)} onChange={e => setSelected({ ...selected, extracted_data: { ...selected.extracted_data, certifications_text: e.target.value } })} /></label></div><button className="button button-primary">Save reviewed details</button></>}</form>}
   </>;

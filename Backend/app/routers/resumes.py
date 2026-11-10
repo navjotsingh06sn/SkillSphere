@@ -182,6 +182,41 @@ async def get_resume(
     return serialize_document(resume)
 
 
+@router.delete("/{resume_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_resume(
+    resume_id: str,
+    user: dict = Depends(candidate_required),
+    database: AsyncDatabase = Depends(get_database),
+):
+    candidate_id = ObjectId(user["id"])
+    resume_id_object = parse_object_id(resume_id, "resume id")
+    resume = await database[RESUMES].find_one({
+        "_id": resume_id_object,
+        "candidate_id": candidate_id,
+    })
+    if not resume:
+        raise HTTPException(status_code=404, detail="Resume was not found.")
+
+    upload_directory = Path(settings.upload_directory).resolve()
+    storage_name = resume.get("storage_name", "")
+    file_path = (upload_directory / storage_name).resolve()
+    if file_path.parent != upload_directory:
+        raise HTTPException(status_code=500, detail="Resume storage path is invalid.")
+
+    try:
+        file_path.unlink(missing_ok=True)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="The resume file could not be deleted. Please try again.",
+        ) from exc
+
+    await database[RESUMES].delete_one({
+        "_id": resume_id_object,
+        "candidate_id": candidate_id,
+    })
+
+
 @router.get("/{resume_id}/status")
 async def resume_status(
     resume_id: str,
@@ -244,7 +279,6 @@ async def save_resume_profile_data(
             upsert=True,
         )
     return {"message": "Resume information saved to your profile.", "profile_data": cleaned}
-
 
 
 
