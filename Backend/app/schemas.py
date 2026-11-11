@@ -35,6 +35,7 @@ class AccountSettingsInput(BaseModel):
 
 class ProfileInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
     full_name: str | None = Field(default=None, min_length=2, max_length=100)
     phone: str | None = Field(default=None, max_length=40)
     location: str | None = Field(default=None, max_length=120)
@@ -76,5 +77,45 @@ class JobInput(BaseModel):
 
 
 class ApplicationStatusInput(BaseModel):
-    status: Literal["under_review", "shortlisted", "interview", "selected", "rejected"]
+    status: Literal[
+        "under_review",
+        "shortlisted",
+        "interview",
+        "selected",
+        "rejected",
+    ]
+    rejection_reason: str | None = Field(default=None, max_length=1000)
 
+
+class ReconsiderationInput(BaseModel):
+    reason: str = Field(min_length=10, max_length=1000)
+
+
+class InterviewScheduleInput(BaseModel):
+    interview_type: Literal[
+        "technical",
+        "hr",
+        "managerial",
+        "other",
+    ] = "technical"
+
+    scheduled_at: datetime
+    duration_minutes: int = Field(default=30, ge=15, le=240)
+
+    mode: Literal["online", "offline"] = "online"
+    meeting_link: str | None = Field(default=None, max_length=1000)
+    location: str | None = Field(default=None, max_length=500)
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+class InterviewRescheduleInput(BaseModel):
+    scheduled_at: datetime
+    duration_minutes: int = Field(default=30, ge=15, le=240)
+    mode: Literal["online", "offline"] | None = None
+    meeting_link: str | None = Field(default=None, max_length=1000)
+    location: str | None = Field(default=None, max_length=500)
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+class InterviewResponseInput(BaseModel):
+    response: Literal["accepted", "declined"]

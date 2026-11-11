@@ -363,3 +363,25 @@ body { background-image: radial-gradient(ellipse at 6% 3%, color-mix(in srgb, va
 .job-card-meta { display: flex; align-items: center; gap: 8px; }
 .demo-job-badge { color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); }
 .demo-job-notice { margin-bottom: 18px; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent); border-radius: 10px; color: var(--warning); background: color-mix(in srgb, var(--warning) 8%, transparent); font-size: 11px; }
+
+.applicant-filters { grid-template-columns: repeat(4, minmax(0, 1fr)) auto; }
+.applicant-filters > label:first-child { grid-column: auto; }
+.applicant-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.applicant-detail-grid > div { min-width: 0; }
+.applicant-detail-grid b { font-size: 11px; }
+.applicant-detail-grid p { margin: 6px 0 0; color: var(--muted); font-size: 11px; line-height: 1.65; overflow-wrap: anywhere; white-space: pre-line; }
+.applicant-detail-grid small { display: block; margin-top: 5px; color: var(--muted); font-size: 10px; }
+.applicant-action-buttons, .rejection-controls { display: flex; align-items: end; flex-wrap: wrap; gap: 10px; }
+.rejection-controls { margin-top: 18px; }
+.rejection-controls label { flex: 1 1 280px; margin: 0; }
+.interview-form { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
+.interview-list { display: grid; gap: 2px; }
+.interview-card > p { color: var(--muted); font-size: 11px; line-height: 1.6; }
+.interview-card a { color: var(--accent); }
+.notification-row > div > a { display: inline-block; margin-top: 7px; color: var(--accent); font-size: 10px; }
+@media (max-width: 760px) {
+  .applicant-filters { grid-template-columns: 1fr; }
+  .applicant-detail-grid { grid-template-columns: 1fr; }
+  .applicant-action-buttons, .rejection-controls { align-items: stretch; flex-direction: column; }
+  .applicant-action-buttons .button, .rejection-controls .button { width: 100%; }
+}
