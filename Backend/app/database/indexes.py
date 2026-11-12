@@ -19,6 +19,11 @@ async def create_indexes(database: AsyncDatabase) -> None:
         (collections.NOTIFICATIONS, [("user_id", ASCENDING), ("created_at", DESCENDING)], {"name": "notifications_user_created"}),
         (collections.INTERVIEWS, [("recruiter_id", ASCENDING), ("status", ASCENDING), ("scheduled_at", ASCENDING)], {"name": "interviews_recruiter_status_date"}),
         (collections.INTERVIEWS, [("candidate_id", ASCENDING), ("scheduled_at", ASCENDING)], {"name": "interviews_candidate_date"}),
+        (collections.ASSESSMENTS, [("application_id", ASCENDING)], {"unique": True, "name": "assessments_application_unique"}),
+        (collections.ASSESSMENTS, [("candidate_id", ASCENDING), ("created_at", DESCENDING)], {"name": "assessments_candidate_created"}),
+        (collections.ASSESSMENTS, [("recruiter_id", ASCENDING), ("created_at", DESCENDING)], {"name": "assessments_recruiter_created"}),
+        (collections.ASSESSMENT_QUESTIONS, [("category", ASCENDING), ("difficulty", ASCENDING)], {"name": "assessment_questions_category_difficulty"}),
+        (collections.ASSESSMENT_QUESTIONS, [("question_key", ASCENDING)], {"unique": True, "name": "assessment_questions_key_unique"}),
     ]
     for collection_name, keys, options in indexes:
         await database[collection_name].create_index(keys, **options)

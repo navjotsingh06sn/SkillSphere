@@ -9,3 +9,18 @@ Frontend/node_modules/
 Frontend/.npm-cache/
 Frontend/dist/
 Frontend/.env.local
+
+# Python environment
+Backend/paddle_env/
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Environment secrets
+.env
+.env.*
+
+# Test/cache files
+.pytest_cache/
+.mypy_cache/

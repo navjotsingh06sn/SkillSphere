@@ -74,8 +74,8 @@ function PublicNav() {
   </header>;
 }
 const navByRole = {
-  candidate: [["Overview", "/candidate", LayoutDashboard], ["Notifications", "/candidate/notifications", Bell], ["My profile", "/candidate/profile", CircleUserRound], ["My resume", "/candidate/resume", FileText], ["Explore jobs", "/candidate/jobs", Search], ["Saved jobs", "/candidate/saved", Check], ["Applications", "/candidate/applications", BriefcaseBusiness], ["Interviews", "/candidate/interviews", CalendarDays], ["AI analysis", "/candidate/analysis", Sparkles], ["Settings", "/candidate/settings", ShieldCheck]],
-  recruiter: [["Overview", "/recruiter", LayoutDashboard], ["Notifications", "/recruiter/notifications", Bell], ["Company profile", "/recruiter/company", Building2], ["My jobs", "/recruiter/jobs", BriefcaseBusiness], ["Applicants", "/recruiter/applicants", Users], ["Interviews", "/recruiter/interviews", CalendarDays], ["Settings", "/recruiter/settings", ShieldCheck]],
+  candidate: [["Overview", "/candidate", LayoutDashboard], ["Notifications", "/candidate/notifications", Bell], ["My profile", "/candidate/profile", CircleUserRound], ["My resume", "/candidate/resume", FileText], ["Explore jobs", "/candidate/jobs", Search], ["Saved jobs", "/candidate/saved", Check], ["Applications", "/candidate/applications", BriefcaseBusiness], ["Assessments", "/candidate/assessments", Sparkles], ["Interviews", "/candidate/interviews", CalendarDays], ["AI analysis", "/candidate/analysis", Sparkles], ["Settings", "/candidate/settings", ShieldCheck]],
+  recruiter: [["Overview", "/recruiter", LayoutDashboard], ["Notifications", "/recruiter/notifications", Bell], ["Company profile", "/recruiter/company", Building2], ["My jobs", "/recruiter/jobs", BriefcaseBusiness], ["Applicants", "/recruiter/applicants", Users], ["Assessments", "/recruiter/assessments", Sparkles], ["Interviews", "/recruiter/interviews", CalendarDays], ["Settings", "/recruiter/settings", ShieldCheck]],
   admin: [["Overview", "/admin", LayoutDashboard], ["Notifications", "/admin/notifications", Bell], ["Manage users", "/admin/users", Users], ["Moderate jobs", "/admin/jobs", BriefcaseBusiness], ["Settings", "/admin/settings", ShieldCheck]],
 };
 function DashboardLayout() {
@@ -743,6 +743,210 @@ function NotificationsPage() {
   async function markRead(item) { try { await api("/notifications/" + item.id + "/read", { method: "PUT" }); load(); } catch (e) { setError(e.message); } }
   return <><PageHeader eyebrow="YOUR UPDATES" title="Notifications." description="Application updates and activity from your SkillSphere workspace." /><Notice>{error}</Notice><section className="panel">{items.length ? <div className="activity-list">{items.map(item => <div className={"activity-row notification-row " + (item.is_read ? "" : "notification-unread")} key={item.id}><span className="company-tile small-tile"><Bell size={16} /></span><div><b>{item.message}</b><small>{new Date(item.created_at).toLocaleString()}{item.job_title ? " · " + item.job_title : ""}{item.is_read ? " · Read" : " · Unread"}</small>{item.related_url && <Link to={item.related_url}>{user?.role === "recruiter" ? "Open application or interview" : "View application or interview"}</Link>}</div>{!item.is_read && <button className="text-button" onClick={() => markRead(item)}>Mark read</button>}</div>)}</div> : <Empty title="You’re all caught up" text="New application activity will appear here." />}</section></>;
 }
+function AssessmentListPage({ audience }) {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const basePath = audience === "candidate" ? "/candidate" : "/recruiter";
+  useEffect(() => {
+    api("/assessments")
+      .then(setItems)
+      .catch(err => setError(err.message))
+      .finally(() => setLoading(false));
+  }, []);
+  const title = audience === "candidate" ? "Your assessments." : "Candidate assessments.";
+  if (loading) return <><PageHeader eyebrow="ROLE-BASED ASSESSMENTS" title={title} /><Loading /></>;
+  return <>
+    <PageHeader eyebrow="ROLE-BASED ASSESSMENTS" title={title} description={audience === "candidate" ? "Start an assigned assessment or review your results." : "Review candidate results and decide whether to invite eligible candidates to another round."} />
+    <Notice>{error}</Notice>
+    {items.length ? <div className="assessment-list">{items.map(item => {
+      const stateLabel = item.status === "submitted"
+        ? `${item.percentage}% · ${item.result?.toUpperCase()}`
+        : item.status.replaceAll("_", " ");
+      return <Link className="assessment-list-card" key={item.id} to={`${basePath}/assessments/${item.id}`}>
+        <span className="assessment-mark"><Sparkles size={18} /></span>
+        <span className="assessment-list-copy">
+          <strong>{item.job?.title || item.job_title || "Role assessment"}</strong>
+          <small>{audience === "recruiter" ? `${item.candidate?.full_name || "Candidate"} · ${item.candidate?.email || ""}` : `${item.question_count || 0} questions · ${item.time_limit_minutes || 30} minutes`}</small>
+          <small>{item.created_at ? new Date(item.created_at).toLocaleString() : "Assessment"}</small>
+        </span>
+        <span className={`status status-${item.result || item.status}`}>{stateLabel}</span>
+        <ArrowRight size={17} />
+      </Link>;
+    })}</div> : <Empty title="No assessments yet" text={audience === "candidate" ? "An assessment will appear here when a recruiter selects your application." : "Assessments are created when you select an applicant."} action={audience === "recruiter" ? <Link className="button button-outline" to="/recruiter/applicants">Review applicants</Link> : null} />}
+  </>;
+}
+function AssessmentDetailPage({ audience }) {
+  const { assessmentId } = useParams();
+  const [assessment, setAssessment] = useState(null);
+  const [answers, setAnswers] = useState({});
+  const [remaining, setRemaining] = useState(null);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [questionIndex, setQuestionIndex] = useState(0);
+  const [decisionBusy, setDecisionBusy] = useState(false);
+  const answersRef = useRef({});
+  const submitStarted = useRef(false);
+  const isCandidate = audience === "candidate";
+  const basePath = isCandidate ? "/candidate" : "/recruiter";
+
+  useEffect(() => {
+    setAssessment(null);
+    setError("");
+    api("/assessments/" + assessmentId)
+      .then(data => {
+        setAssessment(data);
+        const savedAnswers = data.answers || {};
+        answersRef.current = savedAnswers;
+        setAnswers(savedAnswers);
+      })
+      .catch(err => setError(err.message));
+  }, [assessmentId]);
+
+  useEffect(() => {
+    if (!isCandidate || assessment?.status !== "in_progress") return undefined;
+    const saveTimer = window.setTimeout(() => {
+      setSaving(true);
+      api(`/assessments/${assessmentId}/answers`, {
+        method: "PUT",
+        body: json({ answers: answersRef.current }),
+      }).then(() => setSaving(false)).catch(err => {
+        setSaving(false);
+        setError(err.message);
+      });
+    }, 500);
+    return () => window.clearTimeout(saveTimer);
+  }, [answers, assessment?.status, assessmentId, isCandidate]);
+
+  useEffect(() => {
+    if (!isCandidate || assessment?.status !== "in_progress" || !assessment.deadline_at) return undefined;
+    const tick = () => {
+      const seconds = Math.max(0, Math.ceil((new Date(assessment.deadline_at).getTime() - Date.now()) / 1000));
+      setRemaining(seconds);
+      if (seconds === 0 && !submitStarted.current) {
+        submitStarted.current = true;
+        setBusy(true);
+        api(`/assessments/${assessmentId}/submit`, {
+          method: "POST",
+          body: json({ answers: {} }),
+        }).then(setAssessment).catch(err => {
+          submitStarted.current = false;
+          setError(err.message);
+        }).finally(() => setBusy(false));
+      }
+    };
+    tick();
+    const timer = window.setInterval(tick, 1000);
+    return () => window.clearInterval(timer);
+  }, [assessment?.status, assessment?.deadline_at, assessmentId, isCandidate]);
+
+  function chooseAnswer(questionId, optionIndex) {
+    const next = { ...answersRef.current, [questionId]: optionIndex };
+    answersRef.current = next;
+    setAnswers(next);
+  }
+  async function startAssessment() {
+    setBusy(true);
+    setError("");
+    try {
+      const result = await api(`/assessments/${assessmentId}/start`, { method: "POST" });
+      setAssessment(result);
+      const savedAnswers = result.answers || {};
+      answersRef.current = savedAnswers;
+      setAnswers(savedAnswers);
+      submitStarted.current = false;
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function submitAssessment() {
+    if (busy || submitStarted.current) return;
+    submitStarted.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await api(`/assessments/${assessmentId}/submit`, {
+        method: "POST",
+        body: json({ answers: answersRef.current }),
+      });
+      setAssessment(result);
+      setNotice("Your assessment has been submitted and evaluated.");
+    } catch (err) {
+      submitStarted.current = false;
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function decideSecondRound(decision) {
+    setDecisionBusy(true);
+    setError("");
+    try {
+      const result = await api(`/assessments/${assessmentId}/second-round`, {
+        method: "PUT",
+        body: json({ decision }),
+      });
+      setAssessment(current => ({ ...current, ...result }));
+      setNotice(decision === "invited" ? "Candidate invited to the next round." : "Candidate marked as not invited.");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setDecisionBusy(false);
+    }
+  }
+
+  if (!assessment) return <><PageHeader eyebrow="ASSESSMENT" title="Assessment details" /><Notice>{error}</Notice>{!error && <Loading />}</>;
+  const questions = assessment.questions || [];
+  const currentQuestion = questions[questionIndex];
+  const answeredCount = Object.keys(answers).length;
+  const minutes = remaining === null ? null : `${String(Math.floor(remaining / 60)).padStart(2, "0")}:${String(remaining % 60).padStart(2, "0")}`;
+  const statusText = assessment.status.replaceAll("_", " ");
+  const backPath = `${basePath}/assessments`;
+  const report = assessment.performance_report;
+
+  return <>
+    <PageHeader
+      eyebrow="ROLE-BASED ASSESSMENT"
+      title={assessment.job?.title || assessment.job_title || "Assessment"}
+      description={isCandidate ? "One attempt · 30 minutes · Results are evaluated automatically." : `Candidate: ${assessment.candidate?.full_name || "Candidate"}${assessment.candidate?.email ? ` · ${assessment.candidate.email}` : ""}`}
+      action={<Link className="button button-outline" to={backPath}>Back to assessments</Link>}
+    />
+    <Notice>{error}</Notice><Notice type="success">{notice}</Notice>
+    {assessment.status === "question_shortage" && <section className="panel assessment-instructions"><span className="status status-rejected">Assessment unavailable</span><h2>There are not enough role-specific questions yet.</h2><p>{assessment.shortage?.available_total || 0} relevant questions are available; 30 are required. No unrelated questions were added.</p></section>}
+    {isCandidate && assessment.status === "assigned" && <section className="panel assessment-instructions">
+      <span className="eyebrow">BEFORE YOU BEGIN</span><h2>One focused attempt for this role.</h2>
+      <p>This assessment contains {assessment.question_count} job-related multiple-choice questions and has a 30-minute server-enforced time limit. You have one attempt. Your questions will stay the same if you refresh.</p>
+      <ul><li>Choose one answer per question; you can change answers before submission.</li><li>The test submits automatically when time expires.</li><li>A score of 70% or higher meets the second-round eligibility threshold; the recruiter makes the final invitation decision.</li></ul>
+      <button className="button button-primary" disabled={busy} onClick={startAssessment}>{busy ? "Starting…" : "Start assessment"} <ArrowRight size={16} /></button>
+    </section>}
+    {isCandidate && assessment.status === "in_progress" && <section className="panel assessment-take">
+      <div className="assessment-progress-head"><div><span className="eyebrow">QUESTION {questionIndex + 1} OF {questions.length}</span><h2>{answeredCount} answered <span>·</span> {questions.length - answeredCount} unanswered</h2></div><div className={`assessment-timer ${remaining !== null && remaining < 60 ? "timer-warning" : ""}`} aria-live="polite">{minutes || "30:00"}</div></div>
+      <div className="meter assessment-meter"><i style={{ width: `${questions.length ? answeredCount / questions.length * 100 : 0}%` }} /></div>
+      {currentQuestion && <article className="assessment-question">
+        <div className="assessment-question-meta"><span className="status">{currentQuestion.difficulty}</span><span>{currentQuestion.topic}</span></div>
+        <h3>{currentQuestion.prompt}</h3>
+        <div className="assessment-options">{currentQuestion.options.map((option, index) => <button key={`${currentQuestion.question_id}-${index}`} className={`assessment-option ${answers[currentQuestion.question_id] === index ? "option-selected" : ""}`} aria-pressed={answers[currentQuestion.question_id] === index} onClick={() => chooseAnswer(currentQuestion.question_id, index)}><span>{String.fromCharCode(65 + index)}</span>{option}</button>)}</div>
+      </article>}
+      <div className="assessment-controls"><button className="button button-outline" disabled={questionIndex === 0} onClick={() => setQuestionIndex(index => index - 1)}>Previous</button><span>{saving ? "Saving answers…" : "Answers save automatically"}</span>{questionIndex < questions.length - 1 ? <button className="button button-outline" onClick={() => setQuestionIndex(index => index + 1)}>Next <ArrowRight size={15} /></button> : <button className="button button-primary" disabled={busy} onClick={submitAssessment}>{busy ? "Submitting…" : "Submit assessment"}</button>}</div>
+      <div className="assessment-question-nav">{questions.map((question, index) => <button key={question.question_id} className={`${index === questionIndex ? "question-current " : ""}${answers[question.question_id] !== undefined ? "question-answered" : ""}`} onClick={() => setQuestionIndex(index)} aria-label={`Go to question ${index + 1}`}>{index + 1}</button>)}</div>
+    </section>}
+    {assessment.status === "submitted" && <section className="panel assessment-results">
+      <div className="assessment-result-heading"><div><span className="eyebrow">ASSESSMENT RESULT</span><h2>{isCandidate ? "Your assessment is complete." : `${assessment.candidate?.full_name || "Candidate"}'s assessment result`}</h2></div><span className={`status status-${assessment.result}`}>{assessment.result?.toUpperCase()}</span></div>
+      <div className="assessment-score"><strong>{assessment.percentage}%</strong><span>70% passing threshold</span><div className="meter"><i style={{ width: `${assessment.percentage || 0}%` }} /></div></div>
+      <div className="assessment-result-stats"><div><b>{assessment.correct_count}</b><span>Correct</span></div><div><b>{assessment.incorrect_count}</b><span>Incorrect</span></div><div><b>{assessment.unanswered_count}</b><span>Unanswered</span></div><div><b>{assessment.total_questions}</b><span>Total questions</span></div></div>
+      <div className="assessment-eligibility"><span className={`status ${assessment.second_round_eligible ? "status-selected" : "status-rejected"}`}>{assessment.second_round_eligible ? "Eligible for second round" : "Not eligible for second round"}</span><span>{isCandidate ? "The recruiter decides whether to invite you; passing does not automatically select or hire you." : `Next-round decision: ${(assessment.second_round_decision || "pending").replaceAll("_", " ")}`}</span></div>
+      {report && <><div className="assessment-report"><span className="eyebrow">PERFORMANCE REPORT</span><p>{report.summary}</p><div className="assessment-report-columns"><div><b>Strong skills</b><p>{report.strong_skills?.join(", ") || "More practice recommended"}</p></div><div><b>Areas to improve</b><p>{report.weak_areas?.join(", ") || "No significant weak areas identified"}</p></div></div>{report.improvement_suggestions?.length > 0 && <><b>Improvement suggestions</b><ul>{report.improvement_suggestions.map(item => <li key={item}>{item}</li>)}</ul></>}</div>
+        <div className="assessment-report-tables"><div><h3>Topic performance</h3><div className="table-wrap"><table><thead><tr><th>Topic</th><th>Correct</th><th>Incorrect</th><th>Unanswered</th><th>Score</th></tr></thead><tbody>{Object.entries(report.topic_performance || {}).map(([topic, result]) => <tr key={topic}><td>{topic}</td><td>{result.correct}</td><td>{result.incorrect}</td><td>{result.unanswered}</td><td>{result.percentage}%</td></tr>)}</tbody></table></div></div><div><h3>Difficulty performance</h3><div className="assessment-difficulty-list">{Object.entries(report.difficulty_performance || {}).map(([difficulty, result]) => <div key={difficulty}><span>{difficulty}</span><b>{result.correct}/{result.total}</b><span>{result.percentage}%</span></div>)}</div></div></div>
+      </>}
+      {isCandidate && assessment.submitted_at && <p className="assessment-completed">Completed {new Date(assessment.submitted_at).toLocaleString()}</p>}
+      {!isCandidate && assessment.second_round_eligible && <div className="assessment-decision-actions"><button className="button button-primary" disabled={decisionBusy || assessment.second_round_decision === "invited"} onClick={() => decideSecondRound("invited")}>Invite to next round</button><button className="button button-outline" disabled={decisionBusy || assessment.second_round_decision === "not_invited"} onClick={() => decideSecondRound("not_invited")}>Do not invite</button></div>}
+    </section>}
+  </>;
+}
 function SettingsPage() {
   const { user, updateAccount } = useAuth();
   const displayName = user.full_name || user.email?.split("@")[0] || "";
@@ -899,8 +1103,8 @@ export default function App() {
     <Route path="/" element={<Navigate to="/home" replace />} /><Route path="/home" element={<Landing />} /><Route path="/login" element={<AuthPage mode="login" />} /><Route path="/register" element={<AuthPage mode="register" />} /><Route path="/forgot-password" element={<ForgotPasswordPage />} /><Route path="/reset-password" element={<ResetPasswordPage />} />
     <Route path="/jobs" element={<><PublicNav /><main className="public-jobs section-wrap"><JobsPage /></main></>} /><Route path="/jobs/:jobId" element={<><PublicNav /><main className="public-jobs section-wrap"><JobDetailPage /></main></>} />
     <Route path="/dashboard" element={<Protected><RoleHome /></Protected>} />
-    <Route path="/candidate" element={<Protected roles={["candidate"]}><DashboardLayout /></Protected>}><Route index element={<DashboardHome />} /><Route path="profile" element={<ProfilePage />} /><Route path="notifications" element={<NotificationsPage />} /><Route path="resume" element={<ResumePage />} /><Route path="jobs" element={<JobsPage />} /><Route path="saved" element={<SavedJobsPage />} /><Route path="applications" element={<ApplicationsPage />} /><Route path="applications/:applicationId" element={<CandidateApplicationDetailPage />} /><Route path="interviews" element={<InterviewManagementPage />} /><Route path="analysis" element={<AnalysisPage />} /><Route path="settings" element={<SettingsPage />} /></Route>
-    <Route path="/recruiter" element={<Protected roles={["recruiter"]}><DashboardLayout /></Protected>}><Route index element={<DashboardHome />} /><Route path="company" element={<CompanyPage />} /><Route path="notifications" element={<NotificationsPage />} /><Route path="jobs" element={<RecruiterJobsPage />} /><Route path="applicants" element={<ApplicantsPage />} /><Route path="applicants/:applicationId" element={<ApplicantDetailPage />} /><Route path="interviews" element={<InterviewManagementPage />} /><Route path="settings" element={<SettingsPage />} /></Route>
+    <Route path="/candidate" element={<Protected roles={["candidate"]}><DashboardLayout /></Protected>}><Route index element={<DashboardHome />} /><Route path="profile" element={<ProfilePage />} /><Route path="notifications" element={<NotificationsPage />} /><Route path="resume" element={<ResumePage />} /><Route path="jobs" element={<JobsPage />} /><Route path="saved" element={<SavedJobsPage />} /><Route path="applications" element={<ApplicationsPage />} /><Route path="applications/:applicationId" element={<CandidateApplicationDetailPage />} /><Route path="assessments" element={<AssessmentListPage audience="candidate" />} /><Route path="assessments/:assessmentId" element={<AssessmentDetailPage audience="candidate" />} /><Route path="interviews" element={<InterviewManagementPage />} /><Route path="analysis" element={<AnalysisPage />} /><Route path="settings" element={<SettingsPage />} /></Route>
+    <Route path="/recruiter" element={<Protected roles={["recruiter"]}><DashboardLayout /></Protected>}><Route index element={<DashboardHome />} /><Route path="company" element={<CompanyPage />} /><Route path="notifications" element={<NotificationsPage />} /><Route path="jobs" element={<RecruiterJobsPage />} /><Route path="applicants" element={<ApplicantsPage />} /><Route path="applicants/:applicationId" element={<ApplicantDetailPage />} /><Route path="assessments" element={<AssessmentListPage audience="recruiter" />} /><Route path="assessments/:assessmentId" element={<AssessmentDetailPage audience="recruiter" />} /><Route path="interviews" element={<InterviewManagementPage />} /><Route path="settings" element={<SettingsPage />} /></Route>
     <Route path="/admin" element={<Protected roles={["admin"]}><DashboardLayout /></Protected>}><Route index element={<AdminPage />} /><Route path="notifications" element={<NotificationsPage />} /><Route path="users" element={<AdminPage mode="users" />} /><Route path="jobs" element={<AdminPage mode="jobs" />} /><Route path="companies" element={<AdminPage mode="companies" />} /><Route path="settings" element={<SettingsPage />} /></Route>
     <Route path="*" element={<Navigate to="/home" replace />} />
   </Routes></AuthContext.Provider>;

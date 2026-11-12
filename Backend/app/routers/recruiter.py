@@ -1,146 +1,256 @@
+
 from datetime import datetime, timezone
 
-from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException
-from pymongo.asynchronous.database import AsyncDatabase
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.collections import (
-    COMPANIES,
-    JOBS,
-    APPLICATIONS,
-    CANDIDATE_PROFILES,
-    USERS,
-    INTERVIEWS,
-    RESUMES,
-    RESUME_ANALYSES,
-)
 from app.dependencies import get_database, recruiter_required
+from app.models import (
+    Application,
+    CandidateProfile,
+    Company,
+    Interview,
+    Job,
+    RecruiterProfile,
+    Resume,
+    ResumeAnalysis,
+    User,
+)
+from app.pg_utils import parse_uuid, serialize_model
 from app.schemas import CompanyInput
-from app.utils import serialize_document
-
 
 router = APIRouter(prefix="/recruiter", tags=["recruiters"])
+
+
+def format_company_response(company: Company | None) -> dict:
+    if not company:
+        return {}
+
+    doc = serialize_model(company)
+    doc["company_name"] = company.name
+
+    extra = company.extra_data or {}
+
+    for key in ("industry", "contact_email"):
+        if key in extra and key not in doc:
+            doc[key] = extra[key]
+
+    return doc
+
+
+def get_resume_data(resume: Resume | None) -> dict:
+    if not resume:
+        return {}
+
+    return (
+        getattr(resume, "extracted_data", None)
+        or getattr(resume, "parsed_data", None)
+        or {}
+    )
 
 
 @router.get("/company")
 async def get_company(
     user: dict = Depends(recruiter_required),
-    database: AsyncDatabase = Depends(get_database),
+    db: AsyncSession = Depends(get_database),
 ):
-    company = await database[COMPANIES].find_one({
-        "recruiter_id": ObjectId(user["id"]),
-    })
+    recruiter_uuid = parse_uuid(user["id"], "recruiter id")
 
-    return serialize_document(company) if company else {}
+    result = await db.execute(
+        select(RecruiterProfile).where(
+            RecruiterProfile.user_id == recruiter_uuid
+        )
+    )
+    profile = result.scalar_one_or_none()
+
+    if not profile or not profile.company_id:
+        return {}
+
+    result = await db.execute(
+        select(Company).where(
+            Company.id == profile.company_id
+        )
+    )
+    company = result.scalar_one_or_none()
+
+    return format_company_response(company)
 
 
 @router.put("/company")
 async def save_company(
     data: CompanyInput,
     user: dict = Depends(recruiter_required),
-    database: AsyncDatabase = Depends(get_database),
+    db: AsyncSession = Depends(get_database),
 ):
-    now = datetime.now(timezone.utc)
-    recruiter_id = ObjectId(user["id"])
+    recruiter_uuid = parse_uuid(user["id"], "recruiter id")
 
-    await database[COMPANIES].update_one(
-        {"recruiter_id": recruiter_id},
-        {
-            "$set": {
-                **data.model_dump(),
-                "updated_at": now,
-            },
-            "$setOnInsert": {
-                "recruiter_id": recruiter_id,
-                "created_at": now,
-            },
-        },
-        upsert=True,
+    result = await db.execute(
+        select(RecruiterProfile).where(
+            RecruiterProfile.user_id == recruiter_uuid
+        )
     )
+    profile = result.scalar_one_or_none()
 
-    await database[USERS].update_one(
-        {"_id": recruiter_id},
-        {"$set": {"company_name": data.company_name}},
-    )
+    if not profile:
+        profile = RecruiterProfile(user_id=recruiter_uuid)
+        db.add(profile)
+        await db.flush()
 
-    company = await database[COMPANIES].find_one({
-        "recruiter_id": recruiter_id,
-    })
+    company = None
 
-    return serialize_document(company)
+    if profile.company_id:
+        result = await db.execute(
+            select(Company).where(
+                Company.id == profile.company_id
+            )
+        )
+        company = result.scalar_one_or_none()
+
+    if not company:
+        company = Company(
+            name=data.company_name.strip(),
+            description=data.description,
+            website=data.website,
+            location=data.location,
+            extra_data={
+                "industry": data.industry,
+                "contact_email": data.contact_email,
+            },
+        )
+
+        db.add(company)
+        await db.flush()
+
+        profile.company_id = company.id
+
+    else:
+        company.name = data.company_name.strip()
+        company.description = data.description
+        company.website = data.website
+        company.location = data.location
+
+        extra = dict(company.extra_data or {})
+        extra["industry"] = data.industry
+        extra["contact_email"] = data.contact_email
+
+        company.extra_data = extra
+
+    profile.updated_at = datetime.now(timezone.utc)
+
+    await db.commit()
+    await db.refresh(company)
+
+    return format_company_response(company)
 
 
 @router.get("/jobs")
 async def my_jobs(
     user: dict = Depends(recruiter_required),
-    database: AsyncDatabase = Depends(get_database),
+    db: AsyncSession = Depends(get_database),
 ):
-    cursor = (
-        database[JOBS]
-        .find({"recruiter_id": ObjectId(user["id"])})
-        .sort("created_at", -1)
+    recruiter_uuid = parse_uuid(user["id"], "recruiter id")
+
+    result = await db.execute(
+        select(Job)
+        .where(Job.recruiter_id == recruiter_uuid)
+        .order_by(Job.created_at.desc())
     )
 
-    return [serialize_document(job) async for job in cursor]
+    jobs = result.scalars().all()
+
+    return [
+        serialize_model(job)
+        for job in jobs
+    ]
 
 
 @router.get("/dashboard")
 async def recruiter_dashboard(
     user: dict = Depends(recruiter_required),
-    database: AsyncDatabase = Depends(get_database),
+    db: AsyncSession = Depends(get_database),
 ):
-    recruiter_id = ObjectId(user["id"])
+    recruiter_uuid = parse_uuid(user["id"], "recruiter id")
 
-    jobs = database[JOBS]
-    applications = database[APPLICATIONS]
-    interviews = database[INTERVIEWS]
-
-    job_ids = [
-        item["_id"]
-        async for item in jobs.find(
-            {"recruiter_id": recruiter_id},
-            {"_id": 1},
+    total_jobs = (
+        await db.scalar(
+            select(func.count(Job.id)).where(
+                Job.recruiter_id == recruiter_uuid
+            )
         )
-    ]
+    ) or 0
 
-    total_applications = await applications.count_documents({
-        "recruiter_id": recruiter_id,
-    })
+    active_jobs = (
+        await db.scalar(
+            select(func.count(Job.id)).where(
+                Job.recruiter_id == recruiter_uuid,
+                Job.status == "published",
+            )
+        )
+    ) or 0
+
+    closed_jobs = (
+        await db.scalar(
+            select(func.count(Job.id)).where(
+                Job.recruiter_id == recruiter_uuid,
+                Job.status == "closed",
+            )
+        )
+    ) or 0
+
+    total_applications = (
+        await db.scalar(
+            select(func.count(Application.id)).where(
+                Application.recruiter_id == recruiter_uuid
+            )
+        )
+    ) or 0
+
+    shortlisted = (
+        await db.scalar(
+            select(func.count(Application.id)).where(
+                Application.recruiter_id == recruiter_uuid,
+                Application.status == "shortlisted",
+            )
+        )
+    ) or 0
+
+    pending_review = (
+        await db.scalar(
+            select(func.count(Application.id)).where(
+                Application.recruiter_id == recruiter_uuid,
+                Application.screening_status == "pending_review",
+            )
+        )
+    ) or 0
+
+    reconsideration_requests = (
+        await db.scalar(
+            select(func.count(Application.id)).where(
+                Application.recruiter_id == recruiter_uuid,
+                Application.reconsideration_status == "requested",
+            )
+        )
+    ) or 0
+
+    interviews = (
+        await db.scalar(
+            select(func.count(Interview.id)).where(
+                Interview.recruiter_id == recruiter_uuid,
+                Interview.status == "scheduled",
+            )
+        )
+    ) or 0
 
     return {
-        "total_jobs": len(job_ids),
-
-        "active_jobs": await jobs.count_documents({
-            "recruiter_id": recruiter_id,
-            "status": "published",
-        }),
-
-        "closed_jobs": await jobs.count_documents({
-            "recruiter_id": recruiter_id,
-            "status": "closed",
-        }),
-
+        "total_jobs": total_jobs,
+        "active_jobs": active_jobs,
+        "closed_jobs": closed_jobs,
         "total_applicants": total_applications,
-
-        "shortlisted": await applications.count_documents({
-            "recruiter_id": recruiter_id,
-            "status": "shortlisted",
-        }),
-
-        "pending_review": await applications.count_documents({
-            "recruiter_id": recruiter_id,
-            "screening_status": "pending_review",
-        }),
-
-        "reconsideration_requests": await applications.count_documents({
-            "recruiter_id": recruiter_id,
-            "reconsideration_status": "requested",
-        }),
-
-        "interviews": await interviews.count_documents({
-            "recruiter_id": recruiter_id,
-            "status": "scheduled",
-        }),
+        "shortlisted": shortlisted,
+        "pending_review": pending_review,
+        "reconsideration_requests": reconsideration_requests,
+        "interviews": interviews,
     }
 
 
@@ -152,7 +262,7 @@ async def applicants(
     min_score: int | None = None,
     max_score: int | None = None,
     user: dict = Depends(recruiter_required),
-    database: AsyncDatabase = Depends(get_database),
+    db: AsyncSession = Depends(get_database),
 ):
     allowed_statuses = {
         "applied",
@@ -162,118 +272,194 @@ async def applicants(
         "selected",
         "rejected",
     }
-    if status and status not in allowed_statuses:
-        raise HTTPException(status_code=422, detail="Invalid application status.")
-    if min_score is not None and not 0 <= min_score <= 100:
-        raise HTTPException(status_code=422, detail="Minimum score must be between 0 and 100.")
-    if max_score is not None and not 0 <= max_score <= 100:
-        raise HTTPException(status_code=422, detail="Maximum score must be between 0 and 100.")
-    if min_score is not None and max_score is not None and min_score > max_score:
-        raise HTTPException(status_code=422, detail="Minimum score cannot exceed maximum score.")
 
-    recruiter_id = ObjectId(user["id"])
-    published_job_ids = [
-        job["_id"]
-        async for job in database[JOBS].find(
-            {"recruiter_id": recruiter_id, "status": "published"},
-            {"_id": 1},
+    if status and status not in allowed_statuses:
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid application status.",
         )
+
+    if min_score is not None and not 0 <= min_score <= 100:
+        raise HTTPException(
+            status_code=422,
+            detail="Minimum score must be between 0 and 100.",
+        )
+
+    if max_score is not None and not 0 <= max_score <= 100:
+        raise HTTPException(
+            status_code=422,
+            detail="Maximum score must be between 0 and 100.",
+        )
+
+    if (
+        min_score is not None
+        and max_score is not None
+        and min_score > max_score
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Minimum score cannot exceed maximum score.",
+        )
+
+    recruiter_uuid = parse_uuid(user["id"], "recruiter id")
+
+    result = await db.execute(
+        select(Job.id).where(
+            Job.recruiter_id == recruiter_uuid,
+            Job.status == "published",
+        )
+    )
+
+    published_job_ids = result.scalars().all()
+
+    if not published_job_ids:
+        return []
+
+    conditions = [
+        Application.recruiter_id == recruiter_uuid,
+        Application.job_id.in_(published_job_ids),
     ]
-    query = {
-        "recruiter_id": recruiter_id,
-        "job_id": {"$in": published_job_ids},
-    }
 
     if job_id:
-        if not ObjectId.is_valid(job_id):
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid job id.",
-            )
+        requested_job_id = parse_uuid(job_id, "job id")
 
-        requested_job_id = ObjectId(job_id)
         if requested_job_id not in published_job_ids:
             return []
-        query["job_id"] = requested_job_id
+
+        conditions.append(
+            Application.job_id == requested_job_id
+        )
 
     if status:
-        query["status"] = status
+        conditions.append(
+            Application.status == status
+        )
 
-    score_filter = {}
     if min_score is not None:
-        score_filter["$gte"] = min_score
-    if max_score is not None:
-        score_filter["$lte"] = max_score
-    if score_filter:
-        query["match_score"] = score_filter
+        conditions.append(
+            Application.match_score >= min_score
+        )
 
-    cursor = (
-        database[APPLICATIONS]
-        .find(query)
-        .sort("applied_at", -1)
+    if max_score is not None:
+        conditions.append(
+            Application.match_score <= max_score
+        )
+
+    result = await db.execute(
+        select(Application)
+        .where(*conditions)
+        .order_by(Application.applied_at.desc())
     )
+
+    applications = result.scalars().all()
 
     results = []
 
-    async for application in cursor:
-        profile = await database[CANDIDATE_PROFILES].find_one({
-            "user_id": application["candidate_id"],
-        }) or {}
+    for application in applications:
 
-        resume = await database[RESUMES].find_one({
-            "_id": application.get("resume_id"),
-            "candidate_id": application["candidate_id"],
-        }) if application.get("resume_id") else None
-        extracted_data = (resume or {}).get("extracted_data", {})
-        candidate_skills = profile.get("skills") or extracted_data.get("skills", [])
+        result = await db.execute(
+            select(CandidateProfile).where(
+                CandidateProfile.user_id == application.candidate_id
+            )
+        )
+        profile = result.scalar_one_or_none()
 
-        if skill and skill.casefold() not in " ".join(
-            candidate_skills
-        ).casefold():
-            continue
+        resume = None
 
-        account = await database[USERS].find_one(
-            {"_id": application["candidate_id"]},
-            {"email": 1, "full_name": 1},
+        if application.resume_id:
+            result = await db.execute(
+                select(Resume).where(
+                    Resume.id == application.resume_id,
+                    Resume.candidate_id == application.candidate_id,
+                )
+            )
+            resume = result.scalar_one_or_none()
+
+        parsed_resume_data = get_resume_data(resume)
+
+        candidate_skills = (
+            (profile.skills if profile else None)
+            or parsed_resume_data.get("skills", [])
         )
 
-        job = await database[JOBS].find_one(
-            {"_id": application["job_id"]},
-            {"title": 1, "company_name": 1, "status": 1},
+        if isinstance(candidate_skills, str):
+            candidate_skills = [
+                item.strip()
+                for item in candidate_skills.split(",")
+                if item.strip()
+            ]
+
+        if skill:
+            skills_text = " ".join(
+                str(item) for item in candidate_skills
+            ).casefold()
+
+            if skill.casefold() not in skills_text:
+                continue
+
+        result = await db.execute(
+            select(User).where(
+                User.id == application.candidate_id
+            )
         )
+        account = result.scalar_one_or_none()
+
+        result = await db.execute(
+            select(Job).where(
+                Job.id == application.job_id
+            )
+        )
+        job = result.scalar_one_or_none()
 
         analysis = None
 
-        if application.get("analysis_id"):
-            analysis = await database[RESUME_ANALYSES].find_one({
-                "_id": application["analysis_id"],
-            })
+        if application.analysis_id:
+            result = await db.execute(
+                select(ResumeAnalysis).where(
+                    ResumeAnalysis.id == application.analysis_id
+                )
+            )
+            analysis = result.scalar_one_or_none()
+
+        app_doc = serialize_model(application)
 
         results.append({
-            **serialize_document(application),
-
+            **app_doc,
             "candidate": {
-                "id": str(application["candidate_id"]),
-                "full_name": profile.get("full_name") or (
-                    account.get("full_name") if account else ""
+                "id": str(application.candidate_id),
+                "full_name": (
+                    (account.full_name if account else "")
+                    or (profile.headline if profile else "")
                 ),
-                "email": account.get("email") if account else "",
-                "phone": profile.get("phone") or extracted_data.get("phone"),
-                "education": profile.get("education") or extracted_data.get("education", []),
+                "email": account.email if account else "",
+                "phone": (
+                    (profile.phone if profile else None)
+                    or parsed_resume_data.get("phone")
+                ),
+                "education": (
+                    (profile.education if profile else None)
+                    or parsed_resume_data.get("education", [])
+                ),
                 "skills": candidate_skills,
-                "experience": profile.get("experience") or extracted_data.get("experience", []),
+                "experience": (
+                    (profile.experience if profile else None)
+                    or parsed_resume_data.get("experience", [])
+                ),
             },
-
-            "job": serialize_document(job),
-
-            "analysis": serialize_document(analysis),
+            "job": serialize_model(job),
+            "analysis": serialize_model(analysis),
             "resume": (
                 {
-                    "id": str(resume["_id"]),
-                    "original_name": resume.get("original_name", "Resume"),
-                    "status": resume.get("status"),
+                    "id": str(resume.id),
+                    "original_name": getattr(
+                        resume,
+                        "file_name",
+                        "Resume",
+                    ),
+                    "status": resume.status,
                 }
-                if resume else None
+                if resume
+                else None
             ),
         })
 

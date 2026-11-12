@@ -5,12 +5,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import (
-    close_mongodb,
-    connect_to_mongodb,
+    connect_to_database,
+    close_database,
 )
 
 from app.routers import (
     admin,
+    assessments,
     applications,
     auth,
     candidates,
@@ -30,15 +31,15 @@ from app.rate_limit import SensitiveRouteRateLimit
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Connect to MongoDB when the application starts
+    Connect to PostgreSQL when the application starts
     and close the connection when it shuts down.
     """
 
-    await connect_to_mongodb(app)
+    await connect_to_database(app)
 
     yield
 
-    await close_mongodb(app)
+    await close_database(app)
 
 
 app = FastAPI(
@@ -65,6 +66,7 @@ app.add_middleware(SensitiveRouteRateLimit)
 
 # Register API routers
 app.include_router(admin.router, prefix="/api")
+app.include_router(assessments.router, prefix="/api")
 app.include_router(applications.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(candidates.router, prefix="/api")
@@ -83,6 +85,6 @@ async def root():
     return {
         "message": "Welcome to SkillSphere API",
         "status": "running",
+        "database": "PostgreSQL",
         "docs": "/docs",
     }
-

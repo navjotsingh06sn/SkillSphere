@@ -1,36 +1,40 @@
-from datetime import datetime, timezone
+
+import logging
 import re
+from datetime import datetime, timezone
 
-from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, status
-from pymongo.errors import DuplicateKeyError
-from pymongo.asynchronous.database import AsyncDatabase
+from sqlalchemy import or_, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.collections import (
-    APPLICATIONS,
-    CANDIDATE_PROFILES,
-    JOBS,
-    RESUMES,
-    RESUME_ANALYSES,
-    NOTIFICATIONS,
-    USERS,
-)
 from app.dependencies import (
     candidate_required,
     get_current_user,
     get_database,
     recruiter_required,
 )
+from app.models import (
+    Application,
+    CandidateProfile,
+    Job,
+    Notification,
+    Resume,
+    ResumeAnalysis,
+    User,
+)
+from app.pg_utils import parse_uuid, serialize_model
 from app.schemas import (
     ApplicationStatusInput,
     ReconsiderationInput,
 )
-from app.utils import parse_object_id, serialize_document
 
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["applications"])
 
 SCREENING_THRESHOLD = 75
+
 WITHDRAWABLE_APPLICATION_STATUSES = (
     "applied",
     "under_review",
@@ -48,7 +52,11 @@ ALIASES = {
 
 
 def normalize(skill: str) -> str:
-    value = re.sub(r"[^a-z0-9.+#]", "", skill.lower().strip())
+    value = re.sub(
+        r"[^a-z0-9.+#]",
+        "",
+        skill.lower().strip(),
+    )
     return ALIASES.get(value, value)
 
 
@@ -71,10 +79,20 @@ def calculate_match(candidate_skills, required_skills):
     matched_keys = set(required) & set(candidate)
     missing_keys = set(required) - matched_keys
 
-    score = round(100 * len(matched_keys) / len(required), 2)
+    score = round(
+        100 * len(matched_keys) / len(required),
+        2,
+    )
 
-    matched = [required[key] for key in sorted(matched_keys)]
-    missing = [required[key] for key in sorted(missing_keys)]
+    matched = [
+        required[key]
+        for key in sorted(matched_keys)
+    ]
+
+    missing = [
+        required[key]
+        for key in sorted(missing_keys)
+    ]
 
     return score, matched, missing, candidate
 
@@ -86,14 +104,18 @@ def calculate_match(candidate_skills, required_skills):
 async def apply_to_job(
     job_id: str,
     user: dict = Depends(candidate_required),
-    database: AsyncDatabase = Depends(get_database),
+    db: AsyncSession = Depends(get_database),
 ):
-    job_oid = parse_object_id(job_id, "job id")
+    job_uuid = parse_uuid(job_id, "job id")
+    candidate_id = parse_uuid(user["id"], "candidate id")
 
-    job = await database[JOBS].find_one({
-        "_id": job_oid,
-        "status": "published",
-    })
+    job_res = await db.execute(
+        select(Job).where(
+            Job.id == job_uuid,
+            Job.status == "published",
+        )
+    )
+    job = job_res.scalar_one_or_none()
 
     if not job:
         raise HTTPException(
@@ -101,33 +123,36 @@ async def apply_to_job(
             detail="Published job was not found.",
         )
 
-    if job.get("is_demo"):
+    if job.is_demo:
         raise HTTPException(
             status_code=409,
             detail="Demo jobs are for browsing only.",
         )
 
-    candidate_id = ObjectId(user["id"])
+    existing_res = await db.execute(
+        select(Application).where(
+            Application.candidate_id == candidate_id,
+            Application.job_id == job_uuid,
+        )
+    )
 
-    existing_application = await database[APPLICATIONS].find_one({
-        "candidate_id": candidate_id,
-        "job_id": job_oid,
-    })
-
-    if existing_application:
+    if existing_res.scalar_one_or_none():
         raise HTTPException(
             status_code=409,
             detail="You have already applied to this job.",
         )
 
-    # Use the latest successfully processed resume.
-    resume = await database[RESUMES].find_one(
-        {
-            "candidate_id": candidate_id,
-            "status": "completed",
-        },
-        sort=[("created_at", -1)],
+    resume_res = await db.execute(
+        select(Resume)
+        .where(
+            Resume.candidate_id == candidate_id,
+            Resume.status == "completed",
+        )
+        .order_by(Resume.created_at.desc())
+        .limit(1)
     )
+
+    resume = resume_res.scalar_one_or_none()
 
     if not resume:
         raise HTTPException(
@@ -136,8 +161,7 @@ async def apply_to_job(
         )
 
     candidate_skills = set()
-
-    extracted_data = resume.get("extracted_data") or {}
+    extracted_data = resume.parsed_data or {}
 
     for skill in extracted_data.get("skills", []):
         if isinstance(skill, str):
@@ -145,7 +169,7 @@ async def apply_to_job(
 
     match_score, matched, missing, candidate = calculate_match(
         candidate_skills,
-        job.get("required_skills", []),
+        job.required_skills or [],
     )
 
     if match_score is None:
@@ -153,19 +177,21 @@ async def apply_to_job(
         application_status = "under_review"
         rejection_reason = None
         notification_type = "application_applied"
+
         notification_message = (
-            f"Your application for {job['title']} has been submitted successfully. "
+            f"Your application for {job.title} has been submitted successfully. "
             "A recruiter will review it because an automatic screening score "
             "could not be calculated."
         )
 
-    elif len(matched) / (len(matched) + len(missing)) >= SCREENING_THRESHOLD / 100:
+    elif match_score >= SCREENING_THRESHOLD:
         screening_status = "shortlisted"
         application_status = "under_review"
         rejection_reason = None
         notification_type = "application_applied"
+
         notification_message = (
-            f"Your application for {job['title']} has been submitted successfully. "
+            f"Your application for {job.title} has been submitted successfully. "
             "You meet the required screening criteria."
         )
 
@@ -177,9 +203,11 @@ async def apply_to_job(
             f"Your resume matched {match_score:g}% of the required skills, "
             f"below the {SCREENING_THRESHOLD}% screening threshold."
         )
+
         notification_type = "application_rejected"
+
         notification_message = (
-            f"Your application for {job['title']} has been rejected because "
+            f"Your application for {job.title} has been rejected because "
             "your resume did not meet the required screening criteria. "
             "Click to view the reason."
         )
@@ -188,14 +216,11 @@ async def apply_to_job(
 
     required_keys = {
         normalize(skill)
-        for skill in job.get("required_skills", [])
+        for skill in (job.required_skills or [])
         if isinstance(skill, str) and normalize(skill)
     }
 
-    analysis = {
-        "candidate_id": candidate_id,
-        "job_id": job_oid,
-        "resume_id": resume["_id"],
+    raw_ai_payload = {
         "match_percentage": match_score,
         "screening_threshold": SCREENING_THRESHOLD,
         "screening_recommendation": screening_status,
@@ -214,113 +239,117 @@ async def apply_to_job(
             if match_score is not None
             else (
                 "No required skills were defined. Manual review is required."
-                if not job.get("required_skills")
+                if not job.required_skills
                 else "No usable resume skills were extracted. Manual review is required."
             )
         ),
-        "created_at": now,
     }
 
-    analysis_result = await database[RESUME_ANALYSES].insert_one(analysis)
+    analysis = ResumeAnalysis(
+        candidate_id=candidate_id,
+        job_id=job_uuid,
+        resume_id=resume.id,
+        overall_score=match_score,
+        matched_skills=matched,
+        missing_skills=missing,
+        raw_ai_response=raw_ai_payload,
+    )
 
-    application = {
-        "candidate_id": candidate_id,
-        "job_id": job_oid,
-        "recruiter_id": job["recruiter_id"],
-        "resume_id": resume["_id"],
-        "analysis_id": analysis_result.inserted_id,
-        "match_score": match_score,
-        "required_score": SCREENING_THRESHOLD,
-        "matched_skills": matched,
-        "missing_skills": missing,
-        "screening_threshold": SCREENING_THRESHOLD,
-        "screening_status": screening_status,
-        "screening_reasons": {
-            "matched_skills": matched,
-            "missing_skills": missing,
-        },
-        "reconsideration_status": "not_requested",
-        "status": application_status,
-        "rejection_reason": rejection_reason,
-        "applied_at": now,
-        "updated_at": now,
-    }
+    db.add(analysis)
 
     try:
-        result = await database[APPLICATIONS].insert_one(application)
-    except DuplicateKeyError:
-        await database[RESUME_ANALYSES].delete_one({
-            "_id": analysis_result.inserted_id,
-        })
+        await db.flush()
 
+        application = Application(
+            candidate_id=candidate_id,
+            job_id=job_uuid,
+            recruiter_id=job.recruiter_id,
+            resume_id=resume.id,
+            analysis_id=analysis.id,
+            match_score=match_score,
+            screening_threshold=SCREENING_THRESHOLD,
+            screening_status=screening_status,
+            screening_reasons={
+                "matched_skills": matched,
+                "missing_skills": missing,
+            },
+            reconsideration_status="not_requested",
+            status=application_status,
+            rejection_reason=rejection_reason,
+            applied_at=now,
+            updated_at=now,
+        )
+
+        db.add(application)
+        await db.flush()
+
+        notification = Notification(
+            user_id=candidate_id,
+            type=notification_type,
+            message=notification_message,
+            related_id=application.id,
+            job_id=job_uuid,
+            match_score=match_score,
+            screening_status=screening_status,
+            missing_skills=missing,
+            is_read=False,
+            created_at=now,
+        )
+
+        db.add(notification)
+
+        await db.commit()
+        await db.refresh(application)
+
+    except IntegrityError:
+        await db.rollback()
         raise HTTPException(
             status_code=409,
             detail="You have already applied to this job.",
         )
 
-    application["_id"] = result.inserted_id
-
-    await database[NOTIFICATIONS].insert_one({
-        "user_id": candidate_id,
-        "type": notification_type,
-        "message": notification_message,
-        "related_id": result.inserted_id,
-        "job_id": job_oid,
-        "match_score": match_score,
-        "screening_status": screening_status,
-        "missing_skills": missing,
-        "is_read": False,
-        "created_at": now,
-    })
-
-    return serialize_document(application)
+    return serialize_model(application)
 
 
 @router.get("/applications")
 async def list_applications(
     user: dict = Depends(get_current_user),
-    database: AsyncDatabase = Depends(get_database),
+    db: AsyncSession = Depends(get_database),
 ):
+    user_uuid = parse_uuid(user["id"], "user id")
+
+    conditions = []
+
     if user["role"] == "candidate":
-        query = {
-            "candidate_id": ObjectId(user["id"]),
-        }
+        conditions.append(
+            Application.candidate_id == user_uuid
+        )
 
     elif user["role"] == "recruiter":
-        query = {
-            "recruiter_id": ObjectId(user["id"]),
-            "$or": [
-                {
-                    "screening_status": {
-                        "$in": ["shortlisted", "pending_review"],
-                    },
-                },
-                {
-                    "reconsideration_status": "requested",
-                },
-            ],
-        }
+        conditions.extend([
+            Application.recruiter_id == user_uuid,
+            or_(
+                Application.screening_status.in_(
+                    ["shortlisted", "pending_review"]
+                ),
+                Application.reconsideration_status == "requested",
+            ),
+        ])
 
-    else:
-        query = {}
-
-    cursor = (
-        database[APPLICATIONS]
-        .find(query)
-        .sort("applied_at", -1)
+    stmt = (
+        select(Application, Job)
+        .outerjoin(Job, Application.job_id == Job.id)
+        .where(*conditions)
+        .order_by(Application.applied_at.desc())
     )
+
+    rows = (await db.execute(stmt)).all()
 
     applications = []
 
-    async for application in cursor:
-        job = await database[JOBS].find_one(
-            {"_id": application["job_id"]},
-            {"title": 1, "company_name": 1},
-        )
-
-        item = serialize_document(application)
-        item["job"] = serialize_document(job)
-
+    for application, job in rows:
+        item = serialize_model(application)
+        item["job"] = serialize_model(job)
         applications.append(item)
 
     return applications
@@ -330,13 +359,18 @@ async def list_applications(
 async def get_application(
     application_id: str,
     user: dict = Depends(get_current_user),
-    database: AsyncDatabase = Depends(get_database),
+    db: AsyncSession = Depends(get_database),
 ):
-    oid = parse_object_id(application_id, "application id")
+    app_uuid = parse_uuid(application_id, "application id")
+    user_uuid = parse_uuid(user["id"], "user id")
 
-    application = await database[APPLICATIONS].find_one({
-        "_id": oid,
-    })
+    app_res = await db.execute(
+        select(Application).where(
+            Application.id == app_uuid
+        )
+    )
+
+    application = app_res.scalar_one_or_none()
 
     if not application:
         raise HTTPException(
@@ -346,72 +380,118 @@ async def get_application(
 
     if (
         user["role"] == "candidate"
-        and application["candidate_id"] != ObjectId(user["id"])
+        and application.candidate_id != user_uuid
     ):
         raise HTTPException(
             status_code=404,
             detail="Application was not found.",
         )
 
-    result = serialize_document(application)
+    if (
+        user["role"] == "recruiter"
+        and application.recruiter_id != user_uuid
+    ):
+        raise HTTPException(
+            status_code=404,
+            detail="Application was not found.",
+        )
 
-    if user["role"] == "candidate":
-        job = await database[JOBS].find_one({"_id": application["job_id"]})
-        analysis = await database[RESUME_ANALYSES].find_one({
-            "_id": application["analysis_id"],
-            "candidate_id": application["candidate_id"],
-        }) if application.get("analysis_id") else None
-        result["job"] = serialize_document(job)
-        result["analysis"] = serialize_document(analysis)
+    result = serialize_model(application)
+
+    job_res = await db.execute(
+        select(Job).where(
+            Job.id == application.job_id
+        )
+    )
+
+    job = job_res.scalar_one_or_none()
+    result["job"] = serialize_model(job)
+
+    analysis = None
+
+    if application.analysis_id:
+        ana_res = await db.execute(
+            select(ResumeAnalysis).where(
+                ResumeAnalysis.id == application.analysis_id
+            )
+        )
+        analysis = ana_res.scalar_one_or_none()
+
+    result["analysis"] = serialize_model(analysis)
 
     if user["role"] == "recruiter":
-        if application["recruiter_id"] != ObjectId(user["id"]):
-            raise HTTPException(
-                status_code=404,
-                detail="Application was not found.",
-            )
+        candidate_id = application.candidate_id
 
-        candidate_id = application["candidate_id"]
-        profile = await database[CANDIDATE_PROFILES].find_one({
-            "user_id": candidate_id,
-        }) or {}
-        account = await database[USERS].find_one(
-            {"_id": candidate_id},
-            {"full_name": 1, "email": 1},
-        ) or {}
-        job = await database[JOBS].find_one({
-            "_id": application["job_id"],
-            "recruiter_id": ObjectId(user["id"]),
-        })
-        resume = await database[RESUMES].find_one({
-            "_id": application["resume_id"],
-            "candidate_id": candidate_id,
-        }) if application.get("resume_id") else None
-        analysis = await database[RESUME_ANALYSES].find_one({
-            "_id": application["analysis_id"],
-            "candidate_id": candidate_id,
-        }) if application.get("analysis_id") else None
+        prof_res = await db.execute(
+            select(CandidateProfile).where(
+                CandidateProfile.user_id == candidate_id
+            )
+        )
+        profile = prof_res.scalar_one_or_none()
+
+        usr_res = await db.execute(
+            select(User).where(
+                User.id == candidate_id
+            )
+        )
+        account = usr_res.scalar_one_or_none()
+
+        resume = None
+
+        if application.resume_id:
+            res_res = await db.execute(
+                select(Resume).where(
+                    Resume.id == application.resume_id,
+                    Resume.candidate_id == candidate_id,
+                )
+            )
+            resume = res_res.scalar_one_or_none()
+
+        parsed_data = (
+            resume.parsed_data or {}
+            if resume
+            else {}
+        )
 
         result["candidate"] = {
             "id": str(candidate_id),
-            "full_name": profile.get("full_name") or account.get("full_name", ""),
-            "email": account.get("email", ""),
-            "phone": profile.get("phone") or (resume or {}).get("extracted_data", {}).get("phone"),
-            "education": profile.get("education") or (resume or {}).get("extracted_data", {}).get("education", []),
-            "experience": profile.get("experience") or (resume or {}).get("extracted_data", {}).get("experience", []),
-            "skills": profile.get("skills") or (resume or {}).get("extracted_data", {}).get("skills", []),
+            "full_name": (
+                (account.full_name if account else "")
+                or (profile.headline if profile else "")
+            ),
+            "email": account.email if account else "",
+            "phone": (
+                (profile.phone if profile else None)
+                or parsed_data.get("phone")
+            ),
+            "education": (
+                (profile.education if profile else None)
+                or parsed_data.get("education", [])
+            ),
+            "experience": (
+                (profile.experience if profile else None)
+                or parsed_data.get("experience", [])
+            ),
+            "skills": (
+                (profile.skills if profile else None)
+                or parsed_data.get("skills", [])
+            ),
         }
-        result["job"] = serialize_document(job)
+
         result["resume"] = (
             {
-                "id": str(resume["_id"]),
-                "original_name": resume.get("original_name", "Resume"),
-                "status": resume.get("status"),
-                "extracted_data": resume.get("extracted_data", {}),
+                "id": str(resume.id),
+                "original_name": getattr(
+                    resume,
+                    "filename",
+                    "Resume",
+                ),
+                "status": resume.status,
+                "extracted_data": parsed_data,
             }
-            if resume else None
+            if resume
+            else None
         )
-        result["analysis"] = serialize_document(analysis)
 
     return result
 
@@ -420,40 +500,47 @@ async def get_application(
 async def withdraw_application(
     application_id: str,
     user: dict = Depends(candidate_required),
-    database: AsyncDatabase = Depends(get_database),
+    db: AsyncSession = Depends(get_database),
 ):
-    oid = parse_object_id(application_id, "application id")
+    app_uuid = parse_uuid(application_id, "application id")
+    user_uuid = parse_uuid(user["id"], "candidate id")
 
-    result = await database[APPLICATIONS].update_one(
-        {
-            "_id": oid,
-            "candidate_id": ObjectId(user["id"]),
-            "status": {"$in": WITHDRAWABLE_APPLICATION_STATUSES},
-        },
-        {
-            "$set": {
-                "status": "withdrawn",
-                "updated_at": datetime.now(timezone.utc),
-            }
-        },
+    app_res = await db.execute(
+        select(Application).where(
+            Application.id == app_uuid,
+            Application.candidate_id == user_uuid,
+        )
     )
 
-    if result.modified_count == 0:
+    application = app_res.scalar_one_or_none()
+
+    if (
+        not application
+        or application.status not in WITHDRAWABLE_APPLICATION_STATUSES
+    ):
         raise HTTPException(
             status_code=409,
             detail="This application cannot be withdrawn.",
         )
 
-    application = await database[APPLICATIONS].find_one({"_id": oid})
+    now = datetime.now(timezone.utc)
 
-    await database[NOTIFICATIONS].insert_one({
-        "user_id": application["recruiter_id"],
-        "type": "application_withdrawn",
-        "message": "A candidate withdrew an application.",
-        "related_id": oid,
-        "is_read": False,
-        "created_at": datetime.now(timezone.utc),
-    })
+    application.status = "withdrawn"
+    application.updated_at = now
+
+    notification = Notification(
+        user_id=application.recruiter_id,
+        type="application_withdrawn",
+        message="A candidate withdrew an application.",
+        related_id=app_uuid,
+        job_id=application.job_id,
+        is_read=False,
+        created_at=now,
+    )
+
+    db.add(notification)
+
+    await db.commit()
 
     return {"status": "withdrawn"}
 
@@ -463,9 +550,10 @@ async def update_application_status(
     application_id: str,
     data: ApplicationStatusInput,
     user: dict = Depends(recruiter_required),
-    database: AsyncDatabase = Depends(get_database),
+    db: AsyncSession = Depends(get_database),
 ):
-    oid = parse_object_id(application_id, "application id")
+    app_uuid = parse_uuid(application_id, "application id")
+    recruiter_uuid = parse_uuid(user["id"], "recruiter id")
 
     if data.status == "rejected" and not data.rejection_reason:
         raise HTTPException(
@@ -473,10 +561,14 @@ async def update_application_status(
             detail="A rejection reason is required.",
         )
 
-    application = await database[APPLICATIONS].find_one({
-        "_id": oid,
-        "recruiter_id": ObjectId(user["id"]),
-    })
+    app_res = await db.execute(
+        select(Application).where(
+            Application.id == app_uuid,
+            Application.recruiter_id == recruiter_uuid,
+        )
+    )
+
+    application = app_res.scalar_one_or_none()
 
     if not application:
         raise HTTPException(
@@ -484,13 +576,13 @@ async def update_application_status(
             detail="Application was not found.",
         )
 
-    eligible = application.get("screening_status") in (
+    eligible = application.screening_status in (
         "shortlisted",
         "pending_review",
     )
 
     reconsideration_requested = (
-        application.get("reconsideration_status") == "requested"
+        application.reconsideration_status == "requested"
     )
 
     if not eligible and not reconsideration_requested:
@@ -499,42 +591,64 @@ async def update_application_status(
             detail="This application is not available for recruiter review.",
         )
 
+    previous_status = application.status
     now = datetime.now(timezone.utc)
 
-    update_fields = {
-        "status": data.status,
-        "updated_at": now,
-        "rejection_reason": (
-            data.rejection_reason if data.status == "rejected" else None
-        ),
-    }
+    application.status = data.status
+    application.updated_at = now
 
-    if data.status == "shortlisted":
-        update_fields["recruiter_decision"] = "accepted"
-    elif data.status == "rejected":
-        update_fields["recruiter_decision"] = "rejected"
-
-    await database[APPLICATIONS].update_one(
-        {"_id": oid, "recruiter_id": ObjectId(user["id"])},
-        {"$set": update_fields},
+    application.rejection_reason = (
+        data.rejection_reason
+        if data.status == "rejected"
+        else None
     )
 
+    if data.status == "shortlisted":
+        application.recruiter_decision = "accepted"
+
+    elif data.status == "rejected":
+        application.recruiter_decision = "rejected"
+
+    if data.status == "selected":
+        try:
+            from app.services.assessments import (
+                create_assessment_for_application,
+            )
+
+            await create_assessment_for_application(
+                db,
+                application,
+            )
+
+        except Exception as err:
+            logger.warning(
+                "Assessment trigger for application %s: %s",
+                app_uuid,
+                err,
+            )
+
     message = (
-        f"Your application has been {data.status.replace('_', ' ')}."
+        f"Your application has been "
+        f"{data.status.replace('_', ' ')}."
     )
 
     if data.status == "rejected":
         message += f" Reason: {data.rejection_reason}"
 
-    await database[NOTIFICATIONS].insert_one({
-        "user_id": application["candidate_id"],
-        "type": "application_status",
-        "message": message,
-        "related_id": oid,
-        "job_id": application["job_id"],
-        "is_read": False,
-        "created_at": now,
-    })
+    if previous_status != data.status:
+        notification = Notification(
+            user_id=application.candidate_id,
+            type="application_status",
+            message=message,
+            related_id=app_uuid,
+            job_id=application.job_id,
+            is_read=False,
+            created_at=now,
+        )
+
+        db.add(notification)
+
+    await db.commit()
 
     return {
         "status": data.status,
@@ -547,17 +661,21 @@ async def request_reconsideration(
     application_id: str,
     data: ReconsiderationInput,
     user: dict = Depends(candidate_required),
-    database: AsyncDatabase = Depends(get_database),
+    db: AsyncSession = Depends(get_database),
 ):
-    oid = parse_object_id(application_id, "application id")
-    candidate_id = ObjectId(user["id"])
+    app_uuid = parse_uuid(application_id, "application id")
+    candidate_id = parse_uuid(user["id"], "candidate id")
 
-    application = await database[APPLICATIONS].find_one({
-        "_id": oid,
-        "candidate_id": candidate_id,
-        "screening_status": "not_shortlisted",
-        "status": "rejected",
-    })
+    app_res = await db.execute(
+        select(Application).where(
+            Application.id == app_uuid,
+            Application.candidate_id == candidate_id,
+            Application.screening_status == "not_shortlisted",
+            Application.status == "rejected",
+        )
+    )
+
+    application = app_res.scalar_one_or_none()
 
     if not application:
         raise HTTPException(
@@ -565,7 +683,7 @@ async def request_reconsideration(
             detail="Eligible application for reconsideration was not found.",
         )
 
-    if application.get("reconsideration_status") == "requested":
+    if application.reconsideration_status == "requested":
         raise HTTPException(
             status_code=409,
             detail="You have already requested a manual review.",
@@ -573,38 +691,41 @@ async def request_reconsideration(
 
     now = datetime.now(timezone.utc)
 
-    await database[APPLICATIONS].update_one(
-        {"_id": oid},
-        {
-            "$set": {
-                "reconsideration_status": "requested",
-                "reconsideration_reason": data.reason,
-                "reconsideration_requested_at": now,
-                "updated_at": now,
-            }
-        },
+    application.reconsideration_status = "requested"
+    application.reconsideration_reason = data.reason
+    application.reconsideration_requested_at = now
+    application.updated_at = now
+
+    recruiter_notification = Notification(
+        user_id=application.recruiter_id,
+        type="reconsideration_requested",
+        message=(
+            "A candidate has requested a manual review "
+            "of an AI screening result."
+        ),
+        related_id=app_uuid,
+        job_id=application.job_id,
+        is_read=False,
+        created_at=now,
     )
 
-    await database[NOTIFICATIONS].insert_one({
-        "user_id": application["recruiter_id"],
-        "type": "reconsideration_requested",
-        "message": (
-            "A candidate has requested a manual review of an AI screening result."
+    candidate_notification = Notification(
+        user_id=candidate_id,
+        type="reconsideration_submitted",
+        message=(
+            "Your manual review request has been sent to the recruiter."
         ),
-        "related_id": oid,
-        "job_id": application["job_id"],
-        "is_read": False,
-        "created_at": now,
-    })
+        related_id=app_uuid,
+        job_id=application.job_id,
+        is_read=False,
+        created_at=now,
+    )
 
-    await database[NOTIFICATIONS].insert_one({
-        "user_id": candidate_id,
-        "type": "reconsideration_submitted",
-        "message": "Your manual review request has been sent to the recruiter.",
-        "related_id": oid,
-        "job_id": application["job_id"],
-        "is_read": False,
-        "created_at": now,
-    })
+    db.add(recruiter_notification)
+    db.add(candidate_notification)
 
-    return {"message": "Manual review request submitted successfully."}
+    await db.commit()
+
+    return {
+        "message": "Manual review request submitted successfully."
+    }

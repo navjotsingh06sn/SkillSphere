@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 
 class RegisterInput(BaseModel):
@@ -119,3 +119,11 @@ class InterviewRescheduleInput(BaseModel):
 
 class InterviewResponseInput(BaseModel):
     response: Literal["accepted", "declined"]
+
+
+class AssessmentAnswersInput(BaseModel):
+    answers: dict[str, StrictInt] = Field(default_factory=dict, max_length=30)
+
+
+class SecondRoundDecisionInput(BaseModel):
+    decision: Literal["invited", "not_invited"]
