@@ -1,188 +1,183 @@
 
+import logging
 from datetime import datetime, timezone
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dependencies import get_current_user, get_database
-from app.models import (
-    Application,
-    Assessment,
-    Interview,
-    Job,
-    Notification,
+from app.dependencies import (
+    get_current_user,
+    get_database,
 )
+from app.models import Notification
 from app.pg_utils import parse_uuid, serialize_model
 
-router = APIRouter(prefix="/notifications", tags=["notifications"])
+logger = logging.getLogger(__name__)
+
+router = APIRouter(
+    prefix="/notifications",
+    tags=["notifications"],
+)
 
 
 @router.get("")
 async def list_notifications(
+    unread_only: bool = False,
+    limit: int = 50,
+    offset: int = 0,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_database),
 ):
-    user_uuid = parse_uuid(user["id"], "user id")
+    user_id = parse_uuid(user["id"], "user id")
 
-    notifs_res = await db.execute(
+    if limit < 1 or limit > 100:
+        raise HTTPException(
+            status_code=422,
+            detail="Limit must be between 1 and 100.",
+        )
+
+    if offset < 0:
+        raise HTTPException(
+            status_code=422,
+            detail="Offset cannot be negative.",
+        )
+
+    conditions = [Notification.user_id == user_id]
+
+    if unread_only:
+        conditions.append(Notification.is_read.is_(False))
+
+    result = await db.execute(
         select(Notification)
-        .where(Notification.user_id == user_uuid)
+        .where(*conditions)
         .order_by(Notification.created_at.desc())
-        .limit(50)
+        .limit(limit)
+        .offset(offset)
     )
 
-    notifications = notifs_res.scalars().all()
+    notifications = result.scalars().all()
 
-    items = []
+    return {
+        "notifications": [
+            serialize_model(notification)
+            for notification in notifications
+        ],
+        "count": len(notifications),
+        "limit": limit,
+        "offset": offset,
+    }
 
-    for notification in notifications:
-        item = serialize_model(notification)
-        related_id = notification.related_id
-        job_id = notification.job_id
 
-        notif_type = notification.type or ""
+@router.get("/unread-count")
+async def unread_notification_count(
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_database),
+):
+    user_id = parse_uuid(user["id"], "user id")
 
-        if notif_type.startswith("assessment"):
-            if related_id:
-                ass_cond = (
-                    Assessment.candidate_id == user_uuid
-                    if user["role"] == "candidate"
-                    else Assessment.recruiter_id == user_uuid
-                )
+    from sqlalchemy import func
 
-                ass_res = await db.execute(
-                    select(Assessment).where(
-                        Assessment.id == related_id,
-                        ass_cond,
-                    )
-                )
-
-                assessment = ass_res.scalar_one_or_none()
-
-                if assessment:
-                    item["assessment_id"] = str(assessment.id)
-
-                    item["related_url"] = (
-                        f"/candidate/assessments/{assessment.id}"
-                        if user["role"] == "candidate"
-                        else f"/recruiter/assessments/{assessment.id}"
-                    )
-
-                    job_id = assessment.job_id
-
-        elif notif_type.startswith("interview"):
-            if related_id:
-                int_cond = (
-                    Interview.candidate_id == user_uuid
-                    if user["role"] == "candidate"
-                    else Interview.recruiter_id == user_uuid
-                )
-
-                int_res = await db.execute(
-                    select(Interview).where(
-                        Interview.id == related_id,
-                        int_cond,
-                    )
-                )
-
-                interview = int_res.scalar_one_or_none()
-
-                if interview:
-                    item["application_id"] = str(
-                        interview.application_id
-                    )
-
-                    item["related_url"] = (
-                        "/candidate/interviews"
-                        if user["role"] == "candidate"
-                        else "/recruiter/interviews"
-                    )
-
-                    job_id = interview.job_id
-
-        else:
-            if related_id:
-                app_cond = (
-                    Application.candidate_id == user_uuid
-                    if user["role"] == "candidate"
-                    else Application.recruiter_id == user_uuid
-                )
-
-                app_res = await db.execute(
-                    select(Application).where(
-                        Application.id == related_id,
-                        app_cond,
-                    )
-                )
-
-                application = app_res.scalar_one_or_none()
-
-                if application:
-                    item["application_id"] = str(application.id)
-
-                    item["related_url"] = (
-                        f"/candidate/applications/{application.id}"
-                        if user["role"] == "candidate"
-                        else f"/recruiter/applicants/{application.id}"
-                    )
-
-                    job_id = application.job_id
-
-        if job_id:
-            job_res = await db.execute(
-                select(Job.title).where(Job.id == job_id)
-            )
-
-            job_title = job_res.scalar_one_or_none()
-
-            if job_title:
-                item["job_title"] = job_title
-
-        items.append(item)
-
-    unread_res = await db.execute(
+    result = await db.execute(
         select(func.count(Notification.id)).where(
-            Notification.user_id == user_uuid,
+            Notification.user_id == user_id,
             Notification.is_read.is_(False),
         )
     )
 
-    unread = unread_res.scalar() or 0
-
-    return {
-        "items": items,
-        "unread_count": unread,
-    }
+    return {"unread_count": result.scalar_one()}
 
 
-@router.put("/{notification_id}/read")
-async def mark_read(
+@router.patch("/{notification_id}/read")
+async def mark_notification_read(
     notification_id: str,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_database),
 ):
-    notif_uuid = parse_uuid(notification_id, "notification id")
-    user_uuid = parse_uuid(user["id"], "user id")
+    notification_uuid = parse_uuid(
+        notification_id,
+        "notification id",
+    )
+    user_id = parse_uuid(user["id"], "user id")
 
-    res = await db.execute(
+    result = await db.execute(
         select(Notification).where(
-            Notification.id == notif_uuid,
-            Notification.user_id == user_uuid,
+            Notification.id == notification_uuid,
+            Notification.user_id == user_id,
         )
     )
 
-    notification = res.scalar_one_or_none()
+    notification = result.scalar_one_or_none()
 
     if not notification:
         raise HTTPException(
             status_code=404,
-            detail="Notification was not found.",
+            detail="Notification not found.",
         )
 
-    notification.is_read = True
-    notification.read_at = datetime.now(timezone.utc)
+    if not notification.is_read:
+        notification.is_read = True
+        await db.commit()
+
+    return {
+        "message": "Notification marked as read.",
+        "notification": serialize_model(notification),
+    }
+
+
+@router.patch("/read-all")
+async def mark_all_notifications_read(
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_database),
+):
+    user_id = parse_uuid(user["id"], "user id")
+
+    result = await db.execute(
+        update(Notification)
+        .where(
+            Notification.user_id == user_id,
+            Notification.is_read.is_(False),
+        )
+        .values(is_read=True)
+    )
 
     await db.commit()
 
-    return {"is_read": True}
+    return {
+        "message": "All notifications marked as read.",
+        "updated_count": result.rowcount or 0,
+    }
+
+
+@router.delete("/{notification_id}")
+async def delete_notification(
+    notification_id: str,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_database),
+):
+    notification_uuid = parse_uuid(
+        notification_id,
+        "notification id",
+    )
+    user_id = parse_uuid(user["id"], "user id")
+
+    result = await db.execute(
+        select(Notification).where(
+            Notification.id == notification_uuid,
+            Notification.user_id == user_id,
+        )
+    )
+
+    notification = result.scalar_one_or_none()
+
+    if not notification:
+        raise HTTPException(
+            status_code=404,
+            detail="Notification not found.",
+        )
+
+    await db.delete(notification)
+    await db.commit()
+
+    return {"message": "Notification deleted successfully."}

@@ -1,4 +1,6 @@
 
+import html
+import logging
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -17,8 +19,10 @@ from app.models import (
     Interview,
     Job,
     Notification,
+    User,
 )
 from app.pg_utils import parse_uuid, serialize_model
+from app.services.smtp import EmailDeliveryError, send_smtp_email
 from app.schemas import (
     InterviewRescheduleInput,
     InterviewResponseInput,
@@ -26,6 +30,7 @@ from app.schemas import (
 )
 
 router = APIRouter(prefix="/interviews", tags=["interviews"])
+logger = logging.getLogger("uvicorn.error")
 
 
 def validate_future_datetime(value: datetime):
@@ -75,6 +80,125 @@ async def notify_user(
     )
 
     db.add(notification)
+
+
+async def deliver_interview_email(
+    db: AsyncSession,
+    interview_id: UUID,
+    event: str,
+) -> Interview:
+    interview = await db.scalar(
+        select(Interview)
+        .where(Interview.id == interview_id)
+        .with_for_update()
+    )
+    if not interview:
+        raise RuntimeError("Interview disappeared before email delivery.")
+    if interview.email_status in {"sent", "sending"}:
+        raise HTTPException(
+            status_code=409,
+            detail="This interview email has already been sent or is being delivered.",
+        )
+    if interview.email_status not in {"pending", "failed"}:
+        raise HTTPException(
+            status_code=409,
+            detail="This interview email is not available for delivery.",
+        )
+
+    interview.email_status = "sending"
+    interview.email_attempts += 1
+    interview.email_error = None
+    interview.email_message_id = None
+    interview.email_sent_at = None
+    interview.updated_at = datetime.now(timezone.utc)
+    extra = dict(interview.extra_data or {})
+    extra["last_email_event"] = event
+    interview.extra_data = extra
+
+    await db.commit()
+    await db.refresh(interview)
+
+    candidate = await db.scalar(
+        select(User).where(User.id == interview.candidate_id)
+    )
+    job = await db.scalar(select(Job).where(Job.id == interview.job_id))
+    if not candidate or not candidate.email:
+        delivery_error = EmailDeliveryError(
+            "The candidate does not have a deliverable email address."
+        )
+    else:
+        job_title = job.title if job else "your role"
+        scheduled_at = (
+            interview.scheduled_at.isoformat()
+            if interview.scheduled_at
+            else "Not specified"
+        )
+        event_titles = {
+            "scheduled": "Interview invitation",
+            "rescheduled": "Interview schedule updated",
+            "cancelled": "Interview cancelled",
+        }
+        title = event_titles[event]
+        mode = (extra.get("mode") or "online").casefold()
+        details = (
+            f"Meeting link: {interview.meeting_link}"
+            if mode == "online" and interview.meeting_link
+            else f"Location: {interview.location}"
+            if interview.location
+            else "Location or meeting link will be shared by the recruiter."
+        )
+        notes = interview.notes or ""
+        text_content = (
+            f"Hello {candidate.full_name or 'there'},\n\n"
+            f"{title} for {job_title}.\n"
+            f"Date and time: {scheduled_at}\n"
+            f"Duration: {extra.get('duration_minutes', 30)} minutes\n"
+            f"{details}\n"
+            + (f"\nNotes: {notes}\n" if notes else "")
+            + "\nRegards,\nSkillSphere"
+        )
+        html_content = (
+            f"<p>Hello {html.escape(candidate.full_name or 'there')},</p>"
+            f"<p>{html.escape(title)} for "
+            f"<strong>{html.escape(job_title)}</strong>.</p>"
+            f"<p><strong>Date and time:</strong> {html.escape(scheduled_at)}<br>"
+            f"<strong>Duration:</strong> {int(extra.get('duration_minutes', 30))} minutes</p>"
+            f"<p>{html.escape(details)}</p>"
+            + (
+                f"<p><strong>Notes:</strong> {html.escape(notes)}</p>"
+                if notes
+                else ""
+            )
+            + "<p>Regards,<br>SkillSphere</p>"
+        )
+        try:
+            message_id = await send_smtp_email(
+                candidate.email,
+                f"{title}: {job_title}",
+                text_content,
+                html_content,
+            )
+        except EmailDeliveryError as exc:
+            delivery_error = exc
+        else:
+            interview.email_status = "sent"
+            interview.email_message_id = message_id
+            interview.email_sent_at = datetime.now(timezone.utc)
+            interview.email_error = None
+            await db.commit()
+            await db.refresh(interview)
+            return interview
+
+    interview.email_status = "failed"
+    interview.email_error = str(delivery_error)[:2000]
+    logger.warning(
+        "Interview email delivery failed for interview %s: %s",
+        interview.id,
+        delivery_error,
+    )
+    await db.commit()
+    await db.refresh(interview)
+    return interview
 
 
 @router.post(
@@ -209,6 +333,7 @@ async def schedule_interview(
 
     await db.commit()
     await db.refresh(interview)
+    interview = await deliver_interview_email(db, interview.id, "scheduled")
 
     return format_interview_doc(interview)
 
@@ -241,6 +366,11 @@ async def list_interviews(
 
     for interview, job in rows:
         item = format_interview_doc(interview)
+        if user["role"] == "candidate":
+            item.pop("email_status", None)
+            item.pop("email_message_id", None)
+            item.pop("email_error", None)
+            item.pop("email_attempts", None)
         item["job"] = serialize_model(job)
         interviews.append(item)
 
@@ -285,7 +415,13 @@ async def get_interview(
             detail="Interview was not found.",
         )
 
-    return format_interview_doc(interview)
+    item = format_interview_doc(interview)
+    if user["role"] == "candidate":
+        item.pop("email_status", None)
+        item.pop("email_message_id", None)
+        item.pop("email_error", None)
+        item.pop("email_attempts", None)
+    return item
 
 
 @router.put("/{interview_id}/response")
@@ -352,11 +488,13 @@ async def reschedule_interview(
     validate_future_datetime(data.scheduled_at)
 
     result = await db.execute(
-        select(Interview).where(
+        select(Interview)
+        .where(
             Interview.id == int_uuid,
             Interview.recruiter_id == recruiter_uuid,
             Interview.status == "scheduled",
         )
+        .with_for_update()
     )
     interview = result.scalar_one_or_none()
 
@@ -405,6 +543,10 @@ async def reschedule_interview(
         interview.notes = data.notes
 
     extra["mode"] = mode
+    interview.email_status = "pending"
+    interview.email_message_id = None
+    interview.email_error = None
+    interview.email_sent_at = None
 
     if data.duration_minutes is not None:
         extra["duration_minutes"] = data.duration_minutes
@@ -424,10 +566,18 @@ async def reschedule_interview(
     )
 
     await db.commit()
+    await db.refresh(interview)
+    interview = await deliver_interview_email(
+        db,
+        interview.id,
+        "rescheduled",
+    )
 
     return {
         "message": "Interview rescheduled successfully.",
         "scheduled_at": data.scheduled_at,
+        "email_status": interview.email_status,
+        "email_error": interview.email_error,
     }
 
 
@@ -442,11 +592,13 @@ async def cancel_interview(
     now = datetime.now(timezone.utc)
 
     result = await db.execute(
-        select(Interview).where(
+        select(Interview)
+        .where(
             Interview.id == int_uuid,
             Interview.recruiter_id == recruiter_uuid,
             Interview.status == "scheduled",
         )
+        .with_for_update()
     )
     interview = result.scalar_one_or_none()
 
@@ -458,6 +610,10 @@ async def cancel_interview(
 
     interview.status = "cancelled"
     interview.updated_at = now
+    interview.email_status = "pending"
+    interview.email_message_id = None
+    interview.email_error = None
+    interview.email_sent_at = None
 
     extra = interview.extra_data or {}
     status_before = extra.get(
@@ -487,7 +643,58 @@ async def cancel_interview(
     )
 
     await db.commit()
+    await db.refresh(interview)
+    interview = await deliver_interview_email(
+        db,
+        interview.id,
+        "cancelled",
+    )
 
     return {
-        "message": "Interview cancelled successfully."
+        "message": "Interview cancelled successfully.",
+        "email_status": interview.email_status,
+        "email_error": interview.email_error,
+    }
+
+
+@router.post("/{interview_id}/email/resend")
+async def resend_interview_email(
+    interview_id: str,
+    user: dict = Depends(recruiter_required),
+    db: AsyncSession = Depends(get_database),
+):
+    int_uuid = parse_uuid(interview_id, "interview id")
+    recruiter_uuid = parse_uuid(user["id"], "recruiter id")
+    interview = await db.scalar(
+        select(Interview)
+        .where(
+            Interview.id == int_uuid,
+            Interview.recruiter_id == recruiter_uuid,
+        )
+        .with_for_update()
+    )
+    if not interview:
+        raise HTTPException(
+            status_code=404,
+            detail="Interview was not found.",
+        )
+    if interview.email_status != "failed":
+        raise HTTPException(
+            status_code=409,
+            detail="Only failed interview emails can be resent.",
+        )
+
+    event = (interview.extra_data or {}).get("last_email_event")
+    if event not in {"scheduled", "rescheduled", "cancelled"}:
+        raise HTTPException(
+            status_code=409,
+            detail="The failed email event cannot be identified for a safe resend.",
+        )
+
+    await db.commit()
+    interview = await deliver_interview_email(db, interview.id, event)
+    return {
+        "message": "Interview email resend attempted.",
+        "email_status": interview.email_status,
+        "email_error": interview.email_error,
     }

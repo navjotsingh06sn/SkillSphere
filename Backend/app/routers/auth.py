@@ -2,9 +2,7 @@
 import hashlib
 import logging
 import secrets
-import smtplib
 from datetime import datetime, timedelta, timezone
-from email.message import EmailMessage
 from urllib.parse import quote
 from uuid import UUID
 
@@ -16,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.dependencies import get_current_user, get_database
 from app.models import CandidateProfile, RecruiterProfile, User
+from app.pg_utils import serialize_model
 from app.schemas import (
     AccountSettingsInput,
     ForgotPasswordInput,
@@ -24,7 +23,9 @@ from app.schemas import (
     ResetPasswordInput,
 )
 from app.security import create_access_token, hash_password, verify_password
-from app.pg_utils import serialize_model
+from app.services.smtp import EmailDeliveryError, send_smtp_email_sync
+from app.services.smtp import EmailDeliveryError, send_smtp_email_sync
+from app.services.smtp import EmailDeliveryError, send_smtp_email_sync
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ AUTH_EXCLUDE_FIELDS = {
 
 def get_public_user(user: User) -> dict:
     user_data = serialize_model(user)
+
     return {
         key: value
         for key, value in user_data.items()
@@ -59,37 +61,15 @@ def send_reset_email(email: str, token: str) -> None:
         + "&token="
         + quote(token)
     )
-
-    message = EmailMessage()
-    message["Subject"] = "Reset your SkillSphere password"
-    message["From"] = settings.smtp_from_email
-    message["To"] = email
-
-    message.set_content(
+    text_content = (
         "Use this one-time link to reset your SkillSphere password. "
         "It expires in 15 minutes. If you did not request this, ignore this email.\n\n"
         + reset_link
     )
-
     try:
-        with smtplib.SMTP(
-            settings.smtp_host,
-            settings.smtp_port,
-            timeout=10,
-        ) as server:
-            server.starttls()
-
-            if settings.smtp_username:
-                server.login(
-                    settings.smtp_username,
-                    settings.smtp_password,
-                )
-
-            server.send_message(message)
-
-    except Exception:
+        send_smtp_email_sync(email, "Reset your SkillSphere password", text_content)
+    except EmailDeliveryError:
         logger.exception("Could not send a SkillSphere password reset email.")
-
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 async def register(
@@ -97,6 +77,13 @@ async def register(
     db: AsyncSession = Depends(get_database),
 ):
     email = data.email.strip().lower()
+    full_name = data.full_name.strip()
+
+    if len(full_name) < 2:
+        raise HTTPException(
+            status_code=422,
+            detail="Name must contain at least 2 characters.",
+        )
 
     if "@" not in email or "." not in email.rsplit("@", 1)[-1]:
         raise HTTPException(
@@ -104,8 +91,14 @@ async def register(
             detail="Enter a valid email address.",
         )
 
+    if data.role not in {"candidate", "recruiter"}:
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid account role.",
+        )
+
     user = User(
-        full_name=data.full_name.strip(),
+        full_name=full_name,
         email=email,
         password_hash=hash_password(data.password),
         role=data.role,
@@ -143,13 +136,22 @@ async def register(
             detail="An account with this email already exists.",
         )
 
+    except Exception:
+        await db.rollback()
+        logger.exception("Account registration failed.")
+        raise HTTPException(
+            status_code=500,
+            detail="Could not create the account.",
+        )
+
     public_user = get_public_user(user)
 
     return {
         "user": public_user,
         "access_token": create_access_token(
-            public_user["id"],
-            public_user["role"],
+            str(user.id),
+            user.role,
+            user.token_version,
         ),
         "token_type": "bearer",
     }
@@ -187,7 +189,7 @@ async def login(
     return {
         "user": public_user,
         "access_token": create_access_token(
-            public_user["id"],
+            str(user.id),
             user.role,
             user.token_version,
         ),
@@ -201,7 +203,13 @@ async def update_account(
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_database),
 ):
-    user_uuid = UUID(str(user["id"]))
+    try:
+        user_uuid = UUID(str(user["id"]))
+    except (ValueError, TypeError, KeyError):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid user session.",
+        )
 
     result = await db.execute(
         select(User).where(User.id == user_uuid)
@@ -244,6 +252,12 @@ async def update_account(
         updates = True
 
     if data.new_password is not None:
+        if len(data.new_password) < 8:
+            raise HTTPException(
+                status_code=422,
+                detail="New password must contain at least 8 characters.",
+            )
+
         account.password_hash = hash_password(data.new_password)
         account.token_version += 1
         updates = True
@@ -265,13 +279,21 @@ async def update_account(
             detail="An account with this email already exists.",
         )
 
+    except Exception:
+        await db.rollback()
+        logger.exception("Account update failed.")
+        raise HTTPException(
+            status_code=500,
+            detail="Could not update the account.",
+        )
+
     public_user = get_public_user(account)
 
     return {
         "user": public_user,
         "access_token": create_access_token(
-            public_user["id"],
-            public_user["role"],
+            str(account.id),
+            account.role,
             account.token_version,
         ),
         "token_type": "bearer",
@@ -283,16 +305,27 @@ async def logout(
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_database),
 ):
-    user_uuid = UUID(str(user["id"]))
+    try:
+        user_uuid = UUID(str(user["id"]))
+    except (ValueError, TypeError, KeyError):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid user session.",
+        )
 
     result = await db.execute(
         select(User).where(User.id == user_uuid)
     )
     account = result.scalar_one_or_none()
 
-    if account:
-        account.token_version += 1
-        await db.commit()
+    if not account:
+        raise HTTPException(
+            status_code=401,
+            detail="User account not found.",
+        )
+
+    account.token_version += 1
+    await db.commit()
 
     return {"message": "Logged out."}
 
@@ -332,7 +365,10 @@ async def forgot_password(
         )
 
     return {
-        "message": "If the account exists, password reset instructions will be sent."
+        "message": (
+            "If the account exists, password reset instructions "
+            "will be sent."
+        )
     }
 
 
@@ -341,7 +377,16 @@ async def reset_password(
     data: ResetPasswordInput,
     db: AsyncSession = Depends(get_database),
 ):
-    token_hash = hashlib.sha256(data.token.encode()).hexdigest()
+    if len(data.new_password) < 8:
+        raise HTTPException(
+            status_code=422,
+            detail="Password must contain at least 8 characters.",
+        )
+
+    token_hash = hashlib.sha256(
+        data.token.encode()
+    ).hexdigest()
+
     now = datetime.now(timezone.utc)
 
     result = await db.execute(
@@ -350,7 +395,7 @@ async def reset_password(
             User.is_active.is_(True),
             User.password_reset_token_hash == token_hash,
             User.password_reset_expires_at > now,
-        )
+        ).with_for_update()
     )
 
     user = result.scalar_one_or_none()
@@ -369,12 +414,38 @@ async def reset_password(
     await db.commit()
 
     return {
-        "message": "Password updated. Please log in with your new password."
+        "message": (
+            "Password updated. Please log in with your new password."
+        )
     }
 
 
 @router.get("/me")
 async def current_user(
     user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_database),
 ):
-    return user
+    try:
+        user_uuid = UUID(str(user["id"]))
+    except (ValueError, TypeError, KeyError):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid user session.",
+        )
+
+    result = await db.execute(
+        select(User).where(
+            User.id == user_uuid,
+            User.is_active.is_(True),
+        )
+    )
+
+    account = result.scalar_one_or_none()
+
+    if not account:
+        raise HTTPException(
+            status_code=401,
+            detail="User account not found or disabled.",
+        )
+
+    return get_public_user(account)

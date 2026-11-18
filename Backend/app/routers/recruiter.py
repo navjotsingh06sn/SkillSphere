@@ -1,4 +1,3 @@
-
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -68,9 +67,7 @@ async def get_company(
         return {}
 
     result = await db.execute(
-        select(Company).where(
-            Company.id == profile.company_id
-        )
+        select(Company).where(Company.id == profile.company_id)
     )
     company = result.scalar_one_or_none()
 
@@ -118,10 +115,8 @@ async def save_company(
                 "contact_email": data.contact_email,
             },
         )
-
         db.add(company)
         await db.flush()
-
         profile.company_id = company.id
 
     else:
@@ -133,7 +128,6 @@ async def save_company(
         extra = dict(company.extra_data or {})
         extra["industry"] = data.industry
         extra["contact_email"] = data.contact_email
-
         company.extra_data = extra
 
     profile.updated_at = datetime.now(timezone.utc)
@@ -157,11 +151,9 @@ async def my_jobs(
         .order_by(Job.created_at.desc())
     )
 
-    jobs = result.scalars().all()
-
     return [
         serialize_model(job)
-        for job in jobs
+        for job in result.scalars().all()
     ]
 
 
@@ -210,7 +202,7 @@ async def recruiter_dashboard(
         await db.scalar(
             select(func.count(Application.id)).where(
                 Application.recruiter_id == recruiter_uuid,
-                Application.status == "shortlisted",
+                Application.screening_status == "shortlisted",
             )
         )
     ) or 0
@@ -330,7 +322,11 @@ async def applicants(
             Application.job_id == requested_job_id
         )
 
-    if status:
+    if status == "shortlisted":
+        conditions.append(
+            Application.screening_status == "shortlisted"
+        )
+    elif status:
         conditions.append(
             Application.status == status
         )
@@ -352,11 +348,9 @@ async def applicants(
     )
 
     applications = result.scalars().all()
-
     results = []
 
     for application in applications:
-
         result = await db.execute(
             select(CandidateProfile).where(
                 CandidateProfile.user_id == application.candidate_id

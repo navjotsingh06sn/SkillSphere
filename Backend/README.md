@@ -1,6 +1,6 @@
 # SkillSphere API
 
-FastAPI service and MongoDB layer for the SkillSphere career platform.
+FastAPI service and PostgreSQL data layer for the SkillSphere career platform.
 
 ## Start
 
@@ -12,8 +12,10 @@ From this folder:
 
 Edit .env before starting:
 - Use a private JWT_SECRET_KEY with at least 32 characters.
-- Set MONGODB_URL to local MongoDB or a MongoDB Atlas URI.
+- Set DATABASE_URL to a PostgreSQL connection string.
 - Optionally set ADMIN_EMAIL and ADMIN_PASSWORD to bootstrap the first admin.
+- Interview invitations and shortlist notifications use the existing SMTP settings: SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, SMTP_FROM_EMAIL, and optional SMTP_FROM_NAME.
+- For Round 1 video uploads, set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET. Keep the API secret in Backend/.env only; do not add it to frontend environment variables.
 
 Then run:
 
@@ -22,7 +24,19 @@ Then run:
 
 The API is at http://127.0.0.1:8000 and Swagger docs are at http://127.0.0.1:8000/docs.
 
-The server can start while MongoDB is down. Database-backed API routes require MongoDB; /api/health/ready returns 503 until a database can be reached and indexed.
+Interview invitations and shortlist notifications use SMTP. If SMTP is unavailable or rejects a message, the database change remains saved and its email status and failure reason are tracked; only failed messages can be retried from the relevant recruiter view.
+
+## Round 1 camera monitoring and recording
+
+Candidates grant camera permission and explicit recording consent before starting or resuming a Round 1 attempt. Face-presence and multiple-face checks still run locally in the browser using MediaPipe. A video-only recording (no audio or screenshots) starts with the attempt and stops on submit or timeout. The browser keeps a local retry copy when browser storage permits, until Cloudinary confirms the upload; successful uploads are stored as authenticated Cloudinary assets. Only the recruiter responsible for the candidate’s application can request a five-minute playback URL. Recruiters can delete uploaded recordings from the assessment review page. Recordings remain until explicitly deleted; automatic expiration is not configured.
+
+Cloudinary credentials are optional at startup. If they are missing or invalid, the API remains available, uploads show a failure state, and the candidate can retry after configuration. Add the three Cloudinary values to Backend/.env and install the backend requirements to enable uploads. The API key and signature are used only for the direct signed upload; the API secret never leaves the backend. Existing SMTP email delivery is unchanged. No Video Assessment or LiveKit recording pipeline is part of this Round 1 integration.
+
+Apply the additive database migrations before using the assessment, proctoring, and recording APIs:
+
+    alembic upgrade head
+
+The server can start while PostgreSQL is unavailable. Database-backed API routes require PostgreSQL; /api/health/ready returns 503 until it is reachable. Apply schema changes with `alembic upgrade head`.
 
 ## OCR
 
@@ -49,4 +63,4 @@ With the API running, execute:
 
     python -m unittest discover -s tests -v
 
-See tests/TEST_RESULTS.md for the observed smoke-check results and the MongoDB limitation.
+See tests/TEST_RESULTS.md for the latest test results and any database limitations.

@@ -14,6 +14,7 @@ from app.models import (
 )
 from app.pg_utils import parse_uuid, serialize_model
 
+
 router = APIRouter(
     prefix="/matching",
     tags=["matching"],
@@ -58,10 +59,19 @@ def calculate_match(candidate_skills, required_skills):
     matched_keys = set(required) & set(candidate)
     missing_keys = set(required) - matched_keys
 
-    score = round((len(matched_keys) / len(required)) * 100)
+    score = round(
+        (len(matched_keys) / len(required)) * 100
+    )
 
-    matched = [required[key] for key in sorted(matched_keys)]
-    missing = [required[key] for key in sorted(missing_keys)]
+    matched = [
+        required[key]
+        for key in sorted(matched_keys)
+    ]
+
+    missing = [
+        required[key]
+        for key in sorted(missing_keys)
+    ]
 
     return score, matched, missing, candidate
 
@@ -72,10 +82,23 @@ def format_analysis_doc(
 ) -> dict:
     doc = serialize_model(analysis)
 
-    extra = analysis.raw_ai_response or {}
+    # Compatibility fields for frontend
+    doc["match_percentage"] = analysis.match_percentage
+    doc["overall_score"] = analysis.match_percentage
+    doc["matched_skills"] = analysis.matched_skills or []
+    doc["missing_skills"] = analysis.missing_skills or []
+    doc["additional_skills"] = analysis.additional_skills or []
+    doc["recommendations"] = analysis.recommendations or []
+    doc["explanation"] = analysis.explanation
 
-    for key, val in extra.items():
-        doc.setdefault(key, val)
+    if analysis.match_percentage is None:
+        doc["screening_status"] = "pending_review"
+    elif analysis.match_percentage >= SCREENING_THRESHOLD:
+        doc["screening_status"] = "shortlisted"
+    else:
+        doc["screening_status"] = "not_shortlisted"
+
+    doc["screening_threshold"] = SCREENING_THRESHOLD
 
     if job:
         doc["job"] = serialize_model(job)
@@ -114,7 +137,10 @@ async def analyze_resume(
     resume_id = data.get("resume_id")
 
     if resume_id:
-        resume_uuid = parse_uuid(resume_id, "resume id")
+        resume_uuid = parse_uuid(
+            resume_id,
+            "resume id",
+        )
 
         resume = await db.scalar(
             select(Resume).where(
@@ -137,7 +163,10 @@ async def analyze_resume(
     if not resume:
         raise HTTPException(
             status_code=404,
-            detail="No completed resume was found. Upload and process a resume first.",
+            detail=(
+                "No completed resume was found. "
+                "Upload and process a resume first."
+            ),
         )
 
     candidate_skills = set()
@@ -181,54 +210,41 @@ async def analyze_resume(
             "No required skills were defined for this job. "
             "Manual recruiter review is required."
         )
-        screening_status = "pending_review"
-
     elif match_score >= SCREENING_THRESHOLD:
         explanation = (
             f"Your profile matches {match_score}% "
             "of this job's required skills. "
             "You have passed the initial screening threshold."
         )
-        screening_status = "shortlisted"
-
     else:
         explanation = (
             f"Your profile matches {match_score}% "
             "of this job's required skills. "
-            f"The minimum screening threshold is {SCREENING_THRESHOLD}%."
+            f"The minimum screening threshold is "
+            f"{SCREENING_THRESHOLD}%."
         )
-        screening_status = "not_shortlisted"
-
-    raw_ai = {
-        "match_percentage": match_score,
-        "matched_skills": matched,
-        "missing_skills": missing,
-        "additional_skills": additional_skills,
-        "recommendations": recommendations,
-        "explanation": explanation,
-        "screening_threshold": SCREENING_THRESHOLD,
-        "screening_status": screening_status,
-    }
 
     analysis = ResumeAnalysis(
         candidate_id=candidate_id,
         job_id=job_uuid,
         resume_id=resume.id,
-        overall_score=(
+        match_percentage=(
             float(match_score)
             if match_score is not None
             else None
         ),
         matched_skills=matched,
         missing_skills=missing,
-        raw_ai_response=raw_ai,
+        additional_skills=additional_skills,
+        recommendations=recommendations,
+        explanation=explanation,
     )
 
     db.add(analysis)
     await db.commit()
     await db.refresh(analysis)
 
-    return format_analysis_doc(analysis)
+    return format_analysis_doc(analysis, job)
 
 
 @router.get("/history")
@@ -236,13 +252,23 @@ async def get_matching_history(
     user: dict = Depends(candidate_required),
     db: AsyncSession = Depends(get_database),
 ):
-    candidate_id = parse_uuid(user["id"], "candidate id")
+    candidate_id = parse_uuid(
+        user["id"],
+        "candidate id",
+    )
 
     stmt = (
         select(ResumeAnalysis, Job)
-        .outerjoin(Job, ResumeAnalysis.job_id == Job.id)
-        .where(ResumeAnalysis.candidate_id == candidate_id)
-        .order_by(ResumeAnalysis.created_at.desc())
+        .outerjoin(
+            Job,
+            ResumeAnalysis.job_id == Job.id,
+        )
+        .where(
+            ResumeAnalysis.candidate_id == candidate_id
+        )
+        .order_by(
+            ResumeAnalysis.created_at.desc()
+        )
     )
 
     rows = (await db.execute(stmt)).all()
@@ -259,12 +285,22 @@ async def get_matching_analysis(
     user: dict = Depends(candidate_required),
     db: AsyncSession = Depends(get_database),
 ):
-    analysis_uuid = parse_uuid(analysis_id, "analysis id")
-    candidate_id = parse_uuid(user["id"], "candidate id")
+    analysis_uuid = parse_uuid(
+        analysis_id,
+        "analysis id",
+    )
+
+    candidate_id = parse_uuid(
+        user["id"],
+        "candidate id",
+    )
 
     stmt = (
         select(ResumeAnalysis, Job)
-        .outerjoin(Job, ResumeAnalysis.job_id == Job.id)
+        .outerjoin(
+            Job,
+            ResumeAnalysis.job_id == Job.id,
+        )
         .where(
             ResumeAnalysis.id == analysis_uuid,
             ResumeAnalysis.candidate_id == candidate_id,

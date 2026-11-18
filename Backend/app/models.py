@@ -385,6 +385,17 @@ class Application(Base):
 
     recruiter_decision: Mapped[str | None] = mapped_column(String(40))
     rejection_reason: Mapped[str | None] = mapped_column(Text)
+    shortlist_email_status: Mapped[str] = mapped_column(
+        String(30), default="pending", nullable=False
+    )
+    shortlist_email_message_id: Mapped[str | None] = mapped_column(String(255))
+    shortlist_email_error: Mapped[str | None] = mapped_column(Text)
+    shortlist_email_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    shortlist_email_attempts: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
 
     reconsideration_status: Mapped[str | None] = mapped_column(String(40))
     reconsideration_reason: Mapped[str | None] = mapped_column(Text)
@@ -526,6 +537,19 @@ class Interview(Base):
     candidate_response: Mapped[str | None] = mapped_column(String(40))
     notes: Mapped[str | None] = mapped_column(Text)
 
+    # SMTP email tracking
+    email_status: Mapped[str] = mapped_column(
+        String(30), default="pending", nullable=False
+    )
+    email_message_id: Mapped[str | None] = mapped_column(String(255))
+    email_error: Mapped[str | None] = mapped_column(Text)
+    email_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    email_attempts: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+
     extra_data: Mapped[dict] = mapped_column(
         JSONB, default=dict, nullable=False
     )
@@ -548,21 +572,35 @@ class Interview(Base):
 class QuestionBankQuestion(Base):
     __tablename__ = "question_bank_questions"
 
+    __table_args__ = (
+        Index(
+            "ix_question_bank_filters",
+            "technology",
+            "role",
+            "difficulty",
+            "is_active",
+        ),
+    )
+
     id: Mapped[uuid.UUID] = uuid_pk()
 
-    recruiter_id: Mapped[uuid.UUID] = mapped_column(
+    # NULL = global/admin question
+    recruiter_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"),
         index=True,
-        nullable=False,
+        nullable=True,
     )
 
     technology: Mapped[str] = mapped_column(
         String(100), nullable=False, index=True
     )
-
     role: Mapped[str] = mapped_column(
         String(150), nullable=False, index=True
     )
+
+    category: Mapped[str | None] = mapped_column(String(150))
+    topic: Mapped[str | None] = mapped_column(String(150))
+    subtopic: Mapped[str | None] = mapped_column(String(150))
 
     difficulty: Mapped[str] = mapped_column(
         String(30), nullable=False
@@ -576,6 +614,10 @@ class QuestionBankQuestion(Base):
     )
 
     explanation: Mapped[str | None] = mapped_column(Text)
+
+    marks: Mapped[float] = mapped_column(
+        Float, default=1, nullable=False
+    )
 
     is_active: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False
@@ -599,16 +641,41 @@ class QuestionBankQuestion(Base):
 class Assessment(Base):
     __tablename__ = "assessments"
 
-    id: Mapped[uuid.UUID] = uuid_pk()
-
-    application_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("applications.id", ondelete="SET NULL")
+    __table_args__ = (
+        UniqueConstraint(
+            "application_id",
+            name="uq_assessment_application",
+        ),
+        Index(
+            "ix_assessment_recruiter_status",
+            "recruiter_id",
+            "status",
+        ),
+        Index(
+            "ix_assessment_candidate_status",
+            "candidate_id",
+            "status",
+        ),
     )
 
-    candidate_id: Mapped[uuid.UUID] = mapped_column(
+    id: Mapped[uuid.UUID] = uuid_pk()
+
+    title: Mapped[str] = mapped_column(
+        String(255),
+        default="First-Round Assessment",
+        nullable=False,
+    )
+
+    application_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("applications.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # NULL candidate_id = recruiter-created template
+    candidate_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"),
         index=True,
-        nullable=False,
+        nullable=True,
     )
 
     recruiter_id: Mapped[uuid.UUID] = mapped_column(
@@ -619,23 +686,32 @@ class Assessment(Base):
 
     job_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("jobs.id", ondelete="CASCADE"),
+        index=True,
         nullable=False,
     )
 
     status: Mapped[str] = mapped_column(
-        String(40), default="pending", nullable=False
+        String(40), default="draft", index=True, nullable=False
     )
 
     total_questions: Mapped[int] = mapped_column(
-        Integer, default=30, nullable=False
+        Integer, default=0, nullable=False
     )
 
-    duration_minutes: Mapped[int] = mapped_column(
-        Integer, default=30, nullable=False
+    total_marks: Mapped[float] = mapped_column(
+        Float, default=0, nullable=False
+    )
+
+    passing_marks: Mapped[float] = mapped_column(
+        Float, default=0, nullable=False
     )
 
     passing_percentage: Mapped[float] = mapped_column(
         Float, default=70, nullable=False
+    )
+
+    duration_minutes: Mapped[int] = mapped_column(
+        Integer, default=30, nullable=False
     )
 
     score: Mapped[float | None] = mapped_column(Float)
@@ -643,12 +719,13 @@ class Assessment(Base):
     started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
-
     expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
-
     submitted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    published_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
 
@@ -659,7 +736,6 @@ class Assessment(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
-
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=utc_now,
@@ -681,6 +757,10 @@ class AssessmentQuestion(Base):
             "order_number",
             name="uq_assessment_question_order",
         ),
+        Index(
+            "ix_assessment_question_bank",
+            "question_bank_id",
+        ),
     )
 
     id: Mapped[uuid.UUID] = uuid_pk()
@@ -700,6 +780,10 @@ class AssessmentQuestion(Base):
 
     difficulty: Mapped[str] = mapped_column(
         String(30), nullable=False
+    )
+
+    marks: Mapped[float] = mapped_column(
+        Float, default=1, nullable=False
     )
 
     order_number: Mapped[int] = mapped_column(
@@ -741,6 +825,10 @@ class AssessmentAnswer(Base):
             "assessment_question_id",
             name="uq_assessment_answer_question",
         ),
+        Index(
+            "ix_assessment_answers_assessment",
+            "assessment_id",
+        ),
     )
 
     id: Mapped[uuid.UUID] = uuid_pk()
@@ -761,4 +849,119 @@ class AssessmentAnswer(Base):
 
     answered_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
+    )
+
+
+class ProctoringSession(Base):
+    __tablename__ = "proctoring_sessions"
+
+    __table_args__ = (
+        UniqueConstraint("assessment_id", name="uq_proctoring_assessment"),
+        Index("ix_proctoring_candidate_status", "candidate_id", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    assessment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("assessments.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(
+        String(30), default="ready", nullable=False
+    )
+    consented_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    camera_permission_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    recording_consented_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    warning_count: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+    admin_notes: Mapped[str | None] = mapped_column(Text)
+    is_flagged: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )
+
+
+class AssessmentRecording(Base):
+    __tablename__ = "assessment_recordings"
+
+    __table_args__ = (
+        UniqueConstraint("assessment_id", "recording_type", name="uq_assessment_recording_type"),
+        UniqueConstraint("cloudinary_public_id", name="uq_assessment_recording_cloudinary_public_id"),
+        Index("ix_assessment_recording_recruiter_status", "recruiter_id", "upload_status"),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    assessment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("assessments.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    recruiter_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    application_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("applications.id", ondelete="SET NULL")
+    )
+    job_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="SET NULL")
+    )
+    recording_type: Mapped[str] = mapped_column(String(30), default="ROUND_1", nullable=False)
+    cloudinary_public_id: Mapped[str] = mapped_column(String(500), nullable=False)
+    cloudinary_asset_id: Mapped[str | None] = mapped_column(String(100), unique=True)
+    resource_type: Mapped[str] = mapped_column(String(20), default="video", nullable=False)
+    delivery_type: Mapped[str] = mapped_column(String(30), default="authenticated", nullable=False)
+    format: Mapped[str | None] = mapped_column(String(30))
+    duration: Mapped[float | None] = mapped_column(Float)
+    file_size: Mapped[int | None] = mapped_column(Integer)
+    upload_status: Mapped[str] = mapped_column(String(30), default="recording", nullable=False)
+    upload_error: Mapped[str | None] = mapped_column(String(1000))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+
+class ProctoringEvent(Base):
+    __tablename__ = "proctoring_events"
+
+    __table_args__ = (
+        Index("ix_proctoring_event_session_time", "session_id", "occurred_at"),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("proctoring_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
     )

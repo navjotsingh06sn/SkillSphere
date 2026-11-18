@@ -14,3 +14,12 @@ Run python -m unittest discover -s tests -v from Backend while the API is runnin
 
 These checks validate API startup, route registration, input validation, authentication gating, database readiness reporting, and selected parsing/matching logic. Candidate/recruiter CRUD and end-to-end workflows still need a reachable MongoDB instance. This machine has no local mongod, and no Atlas connection has been configured, so those database-backed cases could not be run here.
 
+
+## Verification on 2026-11-13
+
+- Focused assessment-question-selection, SMTP, and proctoring tests: 9 passed.
+- Frontend production build: passed.
+- Full backend suite: 39 tests ran; 4 failures and 8 errors. The affected application/resume tests still use BSON ObjectId fixtures although the current routers require PostgreSQL UUIDs; `test_assessments.py` imports the removed `DIFFICULTY_COUNTS` symbol from the former service implementation.
+- No real SMTP delivery or database-backed recruiter-to-candidate workflow was verified. `Backend/.env` does not define the SMTP host or sender settings.
+
+The earlier smoke-check table above records results from a previous implementation and should not be treated as current full-suite verification.

@@ -24,3 +24,6 @@ __pycache__/
 # Test/cache files
 .pytest_cache/
 .mypy_cache/
+
+# Keep the safe backend configuration template versioned
+!Backend/.env.example

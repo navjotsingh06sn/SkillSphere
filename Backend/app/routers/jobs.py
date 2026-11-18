@@ -1,5 +1,5 @@
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import cast, func, or_, select, String
@@ -11,6 +11,15 @@ from app.pg_utils import parse_uuid, serialize_model
 from app.schemas import JobInput
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+
+@router.get("/new-count")
+async def new_job_count(db: AsyncSession = Depends(get_database)):
+    since = datetime.now(timezone.utc) - timedelta(days=7)
+    count = await db.scalar(select(func.count(Job.id)).where(
+        Job.status == "published", Job.created_at >= since, Job.is_demo.is_(False)
+    ))
+    return {"count": int(count or 0), "window_days": 7}
 
 
 @router.get("")

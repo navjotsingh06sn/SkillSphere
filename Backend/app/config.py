@@ -29,6 +29,17 @@ class Settings(BaseSettings):
     smtp_password: str = ""
     smtp_from_email: str = ""
 
+    smtp_from_name: str = "SkillSphere"
+
+    cloudinary_cloud_name: str = ""
+    cloudinary_api_key: str = ""
+    cloudinary_api_secret: str = ""
+
+    assessment_ai_base_url: str = ""
+    assessment_ai_api_key: str = ""
+    assessment_ai_model: str = ""
+    assessment_ai_timeout_seconds: int = 45
+
     model_config = SettingsConfigDict(
         env_file=Path(__file__).resolve().parent.parent / ".env",
         env_file_encoding="utf-8",

@@ -1,7 +1,9 @@
 
+import html
 import logging
 import re
 from datetime import datetime, timezone
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import or_, select
@@ -16,6 +18,7 @@ from app.dependencies import (
 )
 from app.models import (
     Application,
+    Assessment,
     CandidateProfile,
     Job,
     Notification,
@@ -24,10 +27,12 @@ from app.models import (
     User,
 )
 from app.pg_utils import parse_uuid, serialize_model
+from app.config import settings
 from app.schemas import (
     ApplicationStatusInput,
     ReconsiderationInput,
 )
+from app.services.smtp import EmailDeliveryError, send_smtp_email
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +54,127 @@ ALIASES = {
     "mongo": "mongodb",
     "rest": "restapi",
 }
+
+
+def hide_shortlist_email_state(application: dict) -> dict:
+    for field in (
+        "shortlist_email_status",
+        "shortlist_email_message_id",
+        "shortlist_email_error",
+        "shortlist_email_sent_at",
+        "shortlist_email_attempts",
+    ):
+        application.pop(field, None)
+    return application
+
+
+async def deliver_shortlist_email(
+    db: AsyncSession,
+    application_id: UUID,
+) -> Application:
+    application = await db.scalar(
+        select(Application)
+        .where(Application.id == application_id)
+        .with_for_update()
+    )
+    if not application:
+        raise RuntimeError("Application disappeared before shortlist email delivery.")
+    if application.status != "shortlisted":
+        return application
+    if application.shortlist_email_status in {"sent", "sending"}:
+        return application
+
+    application.shortlist_email_status = "sending"
+    application.shortlist_email_attempts += 1
+    application.shortlist_email_message_id = None
+    application.shortlist_email_error = None
+    application.shortlist_email_sent_at = None
+    await db.commit()
+    await db.refresh(application)
+
+    candidate = await db.scalar(
+        select(User).where(User.id == application.candidate_id)
+    )
+    job = await db.scalar(select(Job).where(Job.id == application.job_id))
+    assessment = await db.scalar(
+        select(Assessment).where(
+            Assessment.application_id == application.id,
+            Assessment.candidate_id == application.candidate_id,
+        )
+    )
+    if not candidate or not candidate.email:
+        delivery_error = EmailDeliveryError(
+            "The candidate does not have a deliverable email address."
+        )
+    else:
+        job_title = job.title if job else "the role"
+        assessment_text = ""
+        assessment_html = ""
+        if assessment:
+            assessment_url = (
+                f"{settings.frontend_url.rstrip('/')}/candidate/assessments/"
+                f"{assessment.id}"
+            )
+            details = (
+                f"Round 1 assessment: {assessment.title}\n"
+                f"Questions: {assessment.total_questions}\n"
+                f"Time limit: {assessment.duration_minutes} minutes\n"
+                f"Open your assessment: {assessment_url}"
+            )
+            assessment_text = f"\n\n{details}"
+            assessment_html = (
+                "<p><strong>Round 1 assessment</strong><br>"
+                f"{html.escape(assessment.title)} · "
+                f"{assessment.total_questions} questions · "
+                f"{assessment.duration_minutes} minutes<br>"
+                f'<a href="{html.escape(assessment_url, quote=True)}">'
+                "Open your assessment</a></p>"
+            )
+        greeting = candidate.full_name or "there"
+        subject = f"You've been shortlisted for {job_title}"
+        text_content = (
+            f"Hello {greeting},\n\n"
+            f"Congratulations — your application for {job_title} has been "
+            f"shortlisted. The recruiter will share next steps in SkillSphere."
+            f"{assessment_text}\n\n"
+            "Regards,\nSkillSphere"
+        )
+        html_content = (
+            f"<p>Hello {html.escape(greeting)},</p>"
+            "<p>Congratulations — your application for "
+            f"<strong>{html.escape(job_title)}</strong> has been shortlisted. "
+            "The recruiter will share next steps in SkillSphere.</p>"
+            f"{assessment_html}"
+            "<p>Regards,<br>SkillSphere</p>"
+        )
+        try:
+            message_id = await send_smtp_email(
+                candidate.email,
+                subject,
+                text_content,
+                html_content,
+            )
+        except EmailDeliveryError as exc:
+            delivery_error = exc
+        else:
+            application.shortlist_email_status = "sent"
+            application.shortlist_email_message_id = message_id
+            application.shortlist_email_sent_at = datetime.now(timezone.utc)
+            application.shortlist_email_error = None
+            await db.commit()
+            await db.refresh(application)
+            return application
+
+    application.shortlist_email_status = "failed"
+    application.shortlist_email_error = str(delivery_error)[:2000]
+    logger.warning(
+        "Shortlist email delivery failed for application %s: %s",
+        application.id,
+        delivery_error,
+    )
+    await db.commit()
+    await db.refresh(application)
+    return application
 
 
 def normalize(skill: str) -> str:
@@ -77,7 +203,7 @@ def calculate_match(candidate_skills, required_skills):
         return None, [], [], candidate
 
     matched_keys = set(required) & set(candidate)
-    missing_keys = set(required) - matched_keys
+    missing_keys = set(required) - set(candidate)
 
     score = round(
         100 * len(matched_keys) / len(required),
@@ -161,7 +287,7 @@ async def apply_to_job(
         )
 
     candidate_skills = set()
-    extracted_data = resume.parsed_data or {}
+    extracted_data = resume.extracted_data or {}
 
     for skill in extracted_data.get("skills", []):
         if isinstance(skill, str):
@@ -220,39 +346,43 @@ async def apply_to_job(
         if isinstance(skill, str) and normalize(skill)
     }
 
-    raw_ai_payload = {
-        "match_percentage": match_score,
-        "screening_threshold": SCREENING_THRESHOLD,
-        "screening_recommendation": screening_status,
-        "matched_skills": matched,
-        "missing_skills": missing,
-        "additional_skills": [
-            candidate[key]
-            for key in sorted(set(candidate) - required_keys)
-        ],
-        "recommendations": [
-            f"Build experience with {skill}."
-            for skill in missing
-        ],
-        "explanation": (
-            f"Your resume matches {match_score}% of this job's required skills."
-            if match_score is not None
+    additional_skills = [
+        candidate[key]
+        for key in sorted(set(candidate) - required_keys)
+    ]
+
+    recommendations = [
+        f"Build experience with {skill}."
+        for skill in missing
+    ]
+
+    explanation = (
+        f"Your resume matches {match_score}% of this job's required skills."
+        if match_score is not None
+        else (
+            "No required skills were defined. Manual review is required."
+            if not job.required_skills
             else (
-                "No required skills were defined. Manual review is required."
-                if not job.required_skills
-                else "No usable resume skills were extracted. Manual review is required."
+                "No usable resume skills were extracted. "
+                "Manual review is required."
             )
-        ),
-    }
+        )
+    )
 
     analysis = ResumeAnalysis(
         candidate_id=candidate_id,
         job_id=job_uuid,
         resume_id=resume.id,
-        overall_score=match_score,
+        match_percentage=(
+            float(match_score)
+            if match_score is not None
+            else None
+        ),
         matched_skills=matched,
         missing_skills=missing,
-        raw_ai_response=raw_ai_payload,
+        additional_skills=additional_skills,
+        recommendations=recommendations,
+        explanation=explanation,
     )
 
     db.add(analysis)
@@ -308,7 +438,7 @@ async def apply_to_job(
             detail="You have already applied to this job.",
         )
 
-    return serialize_model(application)
+    return hide_shortlist_email_state(serialize_model(application))
 
 
 @router.get("/applications")
@@ -336,6 +466,12 @@ async def list_applications(
             ),
         ])
 
+    else:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied.",
+        )
+
     stmt = (
         select(Application, Job)
         .outerjoin(Job, Application.job_id == Job.id)
@@ -349,6 +485,8 @@ async def list_applications(
 
     for application, job in rows:
         item = serialize_model(application)
+        if user["role"] == "candidate":
+            hide_shortlist_email_state(item)
         item["job"] = serialize_model(job)
         applications.append(item)
 
@@ -396,7 +534,15 @@ async def get_application(
             detail="Application was not found.",
         )
 
+    if user["role"] not in ("candidate", "recruiter"):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied.",
+        )
+
     result = serialize_model(application)
+    if user["role"] == "candidate":
+        hide_shortlist_email_state(result)
 
     job_res = await db.execute(
         select(Job).where(
@@ -448,7 +594,7 @@ async def get_application(
             resume = res_res.scalar_one_or_none()
 
         parsed_data = (
-            resume.parsed_data or {}
+            resume.extracted_data or {}
             if resume
             else {}
         )
@@ -591,6 +737,20 @@ async def update_application_status(
             detail="This application is not available for recruiter review.",
         )
 
+    allowed_statuses = {
+        "shortlisted",
+        "rejected",
+        "interview",
+        "selected",
+        "under_review",
+    }
+
+    if data.status not in allowed_statuses:
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid application status.",
+        )
+
     previous_status = application.status
     now = datetime.now(timezone.utc)
 
@@ -609,33 +769,20 @@ async def update_application_status(
     elif data.status == "rejected":
         application.recruiter_decision = "rejected"
 
-    if data.status == "selected":
-        try:
-            from app.services.assessments import (
-                create_assessment_for_application,
-            )
-
-            await create_assessment_for_application(
-                db,
-                application,
-            )
-
-        except Exception as err:
-            logger.warning(
-                "Assessment trigger for application %s: %s",
-                app_uuid,
-                err,
-            )
-
-    message = (
-        f"Your application has been "
-        f"{data.status.replace('_', ' ')}."
-    )
-
-    if data.status == "rejected":
-        message += f" Reason: {data.rejection_reason}"
+    # Assessment creation is intentionally not triggered here.
+    # Recruiters create and publish assessments through the
+    # dedicated assessment endpoints, then assign them to shortlisted
+    # applications.
 
     if previous_status != data.status:
+        message = (
+            f"Your application has been "
+            f"{data.status.replace('_', ' ')}."
+        )
+
+        if data.status == "rejected":
+            message += f" Reason: {data.rejection_reason}"
+
         notification = Notification(
             user_id=application.candidate_id,
             type="application_status",
@@ -650,9 +797,55 @@ async def update_application_status(
 
     await db.commit()
 
+    if previous_status != "shortlisted" and data.status == "shortlisted":
+        application = await deliver_shortlist_email(db, app_uuid)
+    else:
+        await db.refresh(application)
+
     return {
         "status": data.status,
-        "rejection_reason": data.rejection_reason,
+        "rejection_reason": application.rejection_reason,
+        "shortlist_email_status": application.shortlist_email_status,
+        "shortlist_email_error": application.shortlist_email_error,
+        "shortlist_email_attempts": application.shortlist_email_attempts,
+    }
+
+
+@router.post("/applications/{application_id}/shortlist-email/resend")
+async def resend_shortlist_email(
+    application_id: str,
+    user: dict = Depends(recruiter_required),
+    db: AsyncSession = Depends(get_database),
+):
+    app_uuid = parse_uuid(application_id, "application id")
+    recruiter_uuid = parse_uuid(user["id"], "recruiter id")
+    application = await db.scalar(
+        select(Application)
+        .where(
+            Application.id == app_uuid,
+            Application.recruiter_id == recruiter_uuid,
+            Application.status == "shortlisted",
+        )
+        .with_for_update()
+    )
+    if not application:
+        raise HTTPException(
+            status_code=404,
+            detail="Shortlisted application was not found.",
+        )
+    if application.shortlist_email_status != "failed":
+        raise HTTPException(
+            status_code=409,
+            detail="Only failed shortlisting emails can be resent.",
+        )
+
+    await db.commit()
+    application = await deliver_shortlist_email(db, app_uuid)
+    return {
+        "message": "Shortlisting email resend attempted.",
+        "shortlist_email_status": application.shortlist_email_status,
+        "shortlist_email_error": application.shortlist_email_error,
+        "shortlist_email_attempts": application.shortlist_email_attempts,
     }
 
 

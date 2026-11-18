@@ -27,11 +27,22 @@ export async function api(path, options = {}) {
   if (options.body && !(options.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
   }
-  const response = await fetch(API_URL + path, { ...options, headers });
+  let response;
+  try {
+    response = await fetch(API_URL + path, { ...options, headers });
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error(`Cannot connect to the SkillSphere server at ${API_URL}. Check that the backend is running and try again.`);
+    }
+    throw error;
+  }
   if (response.status === 204) return null;
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(formatErrorDetail(data.detail));
+    const detail = formatErrorDetail(data.detail);
+    throw new Error(detail === "The request could not be completed."
+      ? `The server could not complete this request (HTTP ${response.status}).`
+      : `${detail} (HTTP ${response.status})`);
   }
   return data;
 }

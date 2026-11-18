@@ -19,6 +19,7 @@ from app.pg_utils import parse_uuid, serialize_model
 from app.routers.matching import normalize
 from app.schemas import ProfileInput
 
+
 router = APIRouter(prefix="/candidates", tags=["candidates"])
 
 
@@ -252,8 +253,9 @@ async def candidate_dashboard(
 
     latest_resume = resume_res.scalar_one_or_none()
 
-    if latest_resume and latest_resume.parsed_data:
-        extracted = latest_resume.parsed_data.get("skills", [])
+    # Resume model uses extracted_data, not parsed_data.
+    if latest_resume and latest_resume.extracted_data:
+        extracted = latest_resume.extracted_data.get("skills", [])
 
         if extracted:
             candidate_skills = list(
@@ -298,7 +300,6 @@ async def candidate_dashboard(
         )
 
         job_view = serialize_model(job)
-
         job_view["match_percentage"] = score
 
         scored_jobs.append(

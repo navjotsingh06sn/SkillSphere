@@ -1,6 +1,6 @@
 # SkillSphere
 
-SkillSphere is a full-stack career and recruitment platform using React, FastAPI, and MongoDB. The repository is split into Backend and Frontend.
+SkillSphere is a full-stack career and recruitment platform using React, FastAPI, and PostgreSQL. The repository is split into Backend and Frontend.
 
 ## What is implemented
 
@@ -22,12 +22,12 @@ Use Python 3.10 or newer.
     .\.venv\Scripts\Activate.ps1
     Copy-Item .env.example .env
     # Set a private JWT_SECRET_KEY of at least 32 characters in .env
-    # Set MONGODB_URL to local MongoDB or your Atlas URI
+    # Set DATABASE_URL to your PostgreSQL connection string
     # For an admin account, set ADMIN_EMAIL and ADMIN_PASSWORD
     pip install -r requirements.txt
     uvicorn app.main:app --reload
 
-The API is at http://127.0.0.1:8000; interactive API docs are at /docs. The backend can start while MongoDB is unavailable, but database workflows require a connection. /api/health/ready checks MongoDB and prepares the indexes.
+The API is at http://127.0.0.1:8000; interactive API docs are at /docs. The backend can start while PostgreSQL is unavailable, but database workflows require a connection. /api/health/ready checks database readiness. Apply schema migrations with `alembic upgrade head`.
 
 ## Start the frontend
 
@@ -42,7 +42,7 @@ Vite prints the local URL. The default API address is http://127.0.0.1:8000/api.
 
 ## Database and initial admin
 
-The default local database name is skillsphere_db. Collections and indexes are created idempotently when MongoDB becomes reachable. For a first admin, set ADMIN_EMAIL and ADMIN_PASSWORD in Backend/.env, then restart the backend. Admin registration is not public. Configure SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, and SMTP_FROM_EMAIL to enable password-reset email delivery.
+The default local database name is skillsphere_db. Apply additive schema migrations with `alembic upgrade head`. For a first admin, set ADMIN_EMAIL and ADMIN_PASSWORD in Backend/.env, then restart the backend. Admin registration is not public. Configure SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, SMTP_FROM_EMAIL, and optional SMTP_FROM_NAME to enable password-reset, interview, and shortlisting email delivery.
 
 ## Demo job listings
 
@@ -65,7 +65,7 @@ Frontend production build:
     cd Frontend
     npm run build
 
-Five API smoke cases and their latest actual results are listed in Backend/tests/TEST_RESULTS.md. Full database workflows need a reachable MongoDB instance; the current development machine does not have mongod installed and no Atlas URI has been configured.
+Backend tests and their latest results are listed in Backend/tests/TEST_RESULTS.md. Database-backed workflows require a reachable PostgreSQL instance. Configure SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, SMTP_FROM_EMAIL, and optional SMTP_FROM_NAME in Backend/.env to enable interview, shortlisting, and password-reset emails.
 
 ## Security notes
 
