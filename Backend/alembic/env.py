@@ -7,8 +7,7 @@ from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app import models  # noqa: F401 — registers all ORM models
-from app.config import settings
-from app.db import Base
+from app.db import Base, get_async_database_url
 
 
 config = context.config
@@ -18,7 +17,7 @@ if config.config_file_name is not None:
 
 # Use the application database URL.
 # Escape percent signs because ConfigParser treats them as interpolation.
-database_url = settings.database_url
+database_url = str(get_async_database_url(use_unpooled=True))
 config.set_main_option(
     "sqlalchemy.url",
     database_url.replace("%", "%%"),

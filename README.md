@@ -44,6 +44,12 @@ Vite prints the local URL. The default API address is http://127.0.0.1:8000/api.
 
 The default local database name is skillsphere_db. Apply additive schema migrations with `alembic upgrade head`. For a first admin, set ADMIN_EMAIL and ADMIN_PASSWORD in Backend/.env, then restart the backend. Admin registration is not public. Configure SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, SMTP_FROM_EMAIL, and optional SMTP_FROM_NAME to enable password-reset, interview, and shortlisting email delivery.
 
+## Neon Postgres
+
+The backend uses its existing FastAPI, SQLAlchemy async, and asyncpg stack. Neon CLI writes branch connection variables to the root `.env.local`, which is ignored by Git. The backend loads that file after `Backend/.env`, so Neon connection values take precedence without replacing SMTP, JWT, Cloudinary, or AI settings. Web requests use Neon’s pooled `DATABASE_URL`; Alembic uses `DATABASE_URL_UNPOOLED` for schema migrations. Both connection URL formats are normalized for asyncpg.
+
+After provisioning the Neon branch, run `alembic upgrade head` from `Backend` (or activate the backend environment and run the same command), then start the API as usual.
+
 ## Demo job listings
 
 To populate an empty job board with eight clearly labeled, browse-only sample listings:
@@ -62,7 +68,6 @@ Backend smoke checks (with the API server running):
 
 Frontend production build:
 
-    cd Frontend
     npm run build
 
 Backend tests and their latest results are listed in Backend/tests/TEST_RESULTS.md. Database-backed workflows require a reachable PostgreSQL instance. Configure SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, SMTP_FROM_EMAIL, and optional SMTP_FROM_NAME in Backend/.env to enable interview, shortlisting, and password-reset emails.

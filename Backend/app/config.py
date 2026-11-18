@@ -5,11 +5,15 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+BACKEND_DIRECTORY = Path(__file__).resolve().parent.parent
+PROJECT_DIRECTORY = BACKEND_DIRECTORY.parent
+
 
 class Settings(BaseSettings):
     app_name: str = "SkillSphere API"
 
     database_url: str = Field(min_length=1)
+    database_url_unpooled: str | None = None
 
     frontend_url: str = "http://127.0.0.1:5173"
 
@@ -41,7 +45,7 @@ class Settings(BaseSettings):
     assessment_ai_timeout_seconds: int = 45
 
     model_config = SettingsConfigDict(
-        env_file=Path(__file__).resolve().parent.parent / ".env",
+        env_file=(BACKEND_DIRECTORY / ".env", PROJECT_DIRECTORY / ".env.local"),
         env_file_encoding="utf-8",
         extra="ignore",
     )

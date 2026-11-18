@@ -9,6 +9,8 @@ Frontend/node_modules/
 Frontend/.npm-cache/
 Frontend/dist/
 Frontend/.env.local
+.neon-cli-config/
+.npm-neon-cache/
 
 # Python environment
 Backend/paddle_env/
@@ -27,3 +29,5 @@ __pycache__/
 
 # Keep the safe backend configuration template versioned
 !Backend/.env.example
+.neon
+node_modules/

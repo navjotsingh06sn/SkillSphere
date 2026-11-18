@@ -1,6 +1,7 @@
 
 import logging
 from pathlib import Path
+from uuid import uuid4
 
 from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -9,11 +10,48 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.engine import URL, make_url
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.pool import NullPool
 
 from app.config import settings
 
 logger = logging.getLogger("uvicorn.error")
+
+
+def get_async_database_url(*, use_unpooled: bool = False) -> URL:
+    """Normalize Neon URLs for SQLAlchemy's asyncpg driver."""
+    raw_url = (
+        settings.database_url_unpooled or settings.database_url
+        if use_unpooled
+        else settings.database_url
+    )
+    url = make_url(raw_url)
+    if url.drivername in {"postgres", "postgresql"}:
+        url = url.set(drivername="postgresql+asyncpg")
+
+    query = dict(url.query)
+    sslmode = query.pop("sslmode", None)
+    query.pop("channel_binding", None)
+    if sslmode and "ssl" not in query:
+        query["ssl"] = sslmode
+    if "-pooler." in (url.host or "").lower():
+        query["prepared_statement_cache_size"] = "0"
+    return url.set(query=query)
+
+
+DATABASE_URL = get_async_database_url()
+IS_POOLED_DATABASE_URL = "-pooler." in (DATABASE_URL.host or "").lower()
+database_connect_args = {
+    "server_settings": {
+        "application_name": "skillsphere_backend",
+    }
+}
+if IS_POOLED_DATABASE_URL:
+    database_connect_args["statement_cache_size"] = 0
+    database_connect_args["prepared_statement_name_func"] = (
+        lambda: f"__asyncpg_{uuid4().hex}__"
+    )
 
 
 class Base(DeclarativeBase):
@@ -21,15 +59,12 @@ class Base(DeclarativeBase):
 
 
 engine = create_async_engine(
-    settings.database_url,
+    DATABASE_URL,
     echo=False,
     pool_pre_ping=True,
     pool_recycle=1800,
-    connect_args={
-        "server_settings": {
-            "application_name": "skillsphere_backend",
-        }
-    },
+    poolclass=NullPool if IS_POOLED_DATABASE_URL else None,
+    connect_args=database_connect_args,
 )
 
 AsyncSessionLocal = async_sessionmaker(
