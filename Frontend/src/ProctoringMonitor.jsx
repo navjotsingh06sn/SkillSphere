@@ -60,6 +60,7 @@ export default function ProctoringMonitor({
     let disposed = false;
     let missingSince = null;
     let multipleSince = null;
+    let multipleWarningShown = false;
     let awaySince = null;
     let restrictedStreak = 0;
     let lastObjectCheck = 0;
@@ -207,11 +208,19 @@ export default function ProctoringMonitor({
               if (detections.length > 1) {
                 multipleSince ??= now;
                 if (now - multipleSince >= 500) {
+                  if (!multipleWarningShown) {
+                    multipleWarningShown = true;
+                    setStatus("More than one person detected. Please make sure only you are visible in the camera.");
+                  }
                   void report("multiple_faces", { face_count: detections.length });
                 }
                 awaySince = null;
               } else {
                 multipleSince = null;
+                if (multipleWarningShown) {
+                  multipleWarningShown = false;
+                  setStatus("Camera monitoring active.");
+                }
                 const box = detections[0].boundingBox;
                 const centerX = box && video.videoWidth ? (box.originX + box.width / 2) / video.videoWidth : 0.5;
                 const centerY = box && video.videoHeight ? (box.originY + box.height / 2) / video.videoHeight : 0.5;
@@ -271,6 +280,19 @@ export default function ProctoringMonitor({
       stopTracks();
     };
   }, [active, assessmentId, attempt]);
+
+  useEffect(() => {
+    if (!active || !recordingFinalized) return;
+    setStatus("Assessment submitted. Camera is now off.");
+    const stream = streamRef.current;
+    stream?.getTracks().forEach(track => {
+      track.onended = null;
+      track.onmute = null;
+      track.onunmute = null;
+      track.stop();
+    });
+    if (videoRef.current) videoRef.current.srcObject = null;
+  }, [active, recordingFinalized]);
 
   useEffect(() => {
     if (!active || !recordingActive || !streamRef.current) return undefined;

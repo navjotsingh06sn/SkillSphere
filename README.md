@@ -48,6 +48,8 @@ The default local database name is skillsphere_db. Apply additive schema migrati
 
 The backend uses its existing FastAPI, SQLAlchemy async, and asyncpg stack. Neon CLI writes branch connection variables to the root `.env.local`, which is ignored by Git. The backend loads that file after `Backend/.env`, so Neon connection values take precedence without replacing SMTP, JWT, Cloudinary, or AI settings. Web requests use Neon’s pooled `DATABASE_URL`; Alembic uses `DATABASE_URL_UNPOOLED` for schema migrations. Both connection URL formats are normalized for asyncpg.
 
+The candidate chatbot uses `CHATBOT_AI_BASE_URL`, `CHATBOT_AI_API_KEY`, and `CHATBOT_AI_MODEL` when all three are configured. Otherwise it reuses the backend-only `ASSESSMENT_AI_*` provider settings. Keep API keys in `Backend/.env`; they are never sent to the browser. The chatbot sends the candidate’s name with each AI request and includes application details only for application-related questions.
+
 After provisioning the Neon branch, run `alembic upgrade head` from `Backend` (or activate the backend environment and run the same command), then start the API as usual.
 
 ## Demo job listings

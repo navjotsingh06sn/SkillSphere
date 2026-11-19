@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     assessment_ai_model: str = ""
     assessment_ai_timeout_seconds: int = 45
 
+    chatbot_ai_base_url: str = ""
+    chatbot_ai_api_key: str = ""
+    chatbot_ai_model: str = ""
+    chatbot_ai_timeout_seconds: int = 30
+
     model_config = SettingsConfigDict(
         env_file=(BACKEND_DIRECTORY / ".env", PROJECT_DIRECTORY / ".env.local"),
         env_file_encoding="utf-8",

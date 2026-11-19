@@ -7,6 +7,7 @@ import ProctoringMonitor from "./ProctoringMonitor.jsx";
 import { clearRound1Draft, loadRound1Draft, saveRound1Final } from "./round1RecordingStorage.js";
 import { uploadRound1Recording } from "./round1CloudinaryUpload.js";
 import AdminProctoring from "./AdminProctoring.jsx";
+import CandidateChatbot from "./CandidateChatbot.jsx";
 
 const AuthContext = createContext(null);
 let audioContext;
@@ -17,7 +18,7 @@ function SkillSphereMark({ size = 32 }) {
       <circle cx="32" cy="32" r="22" fill="none" stroke="var(--border)" strokeWidth="4" />
       <ellipse cx="32" cy="32" rx="29" ry="11" transform="rotate(-32 32 32)" fill="none" stroke="var(--accent)" strokeWidth="5" />
       <circle cx="32" cy="32" r="6" fill="var(--accent)" />
-      <circle cx="55" cy="17" r="4.5" fill="var(--magenta)" />
+      <circle cx="55" cy="17" r="4.5" fill="var(--accent-highlight)" />
     </svg>
   </span>;
 }
@@ -148,6 +149,9 @@ function DashboardLayout() {
       <div className="top-actions"><Link className="icon-button notification-bell-link" to={"/" + user.role + "/notifications"} aria-label={`Notifications${badgeCounts.notifications ? `, ${badgeCounts.notifications} unread` : ""}`}><Bell size={17} />{badgeCounts.notifications > 0 && <span className="bell-count-badge">{badgeCounts.notifications > 99 ? "99+" : badgeCounts.notifications}</span>}</Link><ThemeButton /><SoundButton /><span className="top-divider" /><span className="user-mini"><span className="avatar">{(user?.full_name || "S").slice(0, 1).toUpperCase()}</span><span><b>{user?.full_name || user?.email}</b><small>{user?.role}</small></span><ChevronDown size={15} /></span></div>
     </header><main className="page-content"><Outlet /></main></section>
   </div>;
+}
+function CandidateDashboardLayout() {
+  return <><DashboardLayout /><CandidateChatbot /></>;
 }
 function Landing() {
   return <><PublicNav /><main className="landing"><section className="hero section-wrap"><div className="hero-copy"><div className="pill"><span className="pulse-dot" /> CAREERS, CONNECTED</div><h1>Your next opportunity <em>starts here.</em></h1><p>Discover opportunities, unlock your potential, and let thoughtful skill matching connect you with the right career.</p><div className="hero-buttons"><Link className="button button-primary button-large" to="/jobs">Explore jobs <ArrowRight size={17} /></Link><Link className="button button-outline button-large" to="/register"><UploadCloud size={17} /> Upload resume</Link></div><div className="hero-proof"><span className="proof-icon"><Users size={16} /></span><div><b>For candidates and recruiters</b><small>One clear process for finding the right fit.</small></div></div></div>
@@ -539,6 +543,7 @@ function ApplicantDetailPage() {
   const { applicationId } = useParams();
   const [application, setApplication] = useState(null);
   const [interviews, setInterviews] = useState([]);
+  const [assessmentResult, setAssessmentResult] = useState(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [rejectionReason, setRejectionReason] = useState("");
@@ -568,6 +573,20 @@ function ApplicantDetailPage() {
   }
 
   useEffect(() => { load(); }, [applicationId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api("/assessments")
+      .then(data => {
+        if (cancelled) return;
+        const attempts = (data.assessments || data || [])
+          .filter(item => item.application_id === applicationId)
+          .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+        setAssessmentResult(attempts[0] || null);
+      })
+      .catch(() => { if (!cancelled) setAssessmentResult(null); });
+    return () => { cancelled = true; };
+  }, [applicationId]);
 
   async function updateStatus(nextStatus) {
     setBusy(true);
@@ -656,6 +675,11 @@ function ApplicantDetailPage() {
       </div>
       {application.rejection_reason && <Notice>{application.rejection_reason}</Notice>}
     </section>
+    {assessmentResult && <section className="panel applicant-assessment-result">
+      <div className="panel-heading"><div><span className="eyebrow">ASSESSMENT</span><h3>{assessmentResult.job?.title || assessmentResult.job_title || "Candidate assessment"}</h3></div><span className={`status status-${assessmentResult.result || assessmentResult.status}`}>{assessmentResult.status?.replaceAll("_", " ")}</span></div>
+      {assessmentResult.percentage != null ? <p>Result: <strong>{assessmentResult.percentage}% · {assessmentResult.result?.toUpperCase() || assessmentResult.status?.replaceAll("_", " ")}</strong></p> : <p>The candidate has not submitted this assessment yet.</p>}
+      <Link className="button button-outline" to={`/recruiter/assessments/${assessmentResult.id}`}>{["submitted", "passed", "failed", "expired"].includes(assessmentResult.status) ? "View candidate result" : "View assessment status"}</Link>
+    </section>}
     {application.status === "shortlisted" && <section className="panel">
       <div className="panel-heading"><div><span className="eyebrow">CANDIDATE EMAIL</span><h3>Shortlisting notification</h3></div><span className={`status status-${application.shortlist_email_status || "pending"}`}>{application.shortlist_email_status || "pending"}</span></div>
       <p>{application.shortlist_email_attempts || 0} delivery attempt(s)</p>
@@ -909,7 +933,7 @@ function AssessmentDetailPage({ audience }) {
     submitStarted.current = true;
     setBusy(false);
     setAssessment(result);
-    setNotice("Assessment automatically submitted after three camera warnings.");
+    setNotice("Assessment submitted. Your camera is now off.");
   }, []);
 
   const loadAssessment = useCallback(async () => {
@@ -992,7 +1016,7 @@ function AssessmentDetailPage({ audience }) {
         api(`/assessments/${assessmentId}/submit`, {
           method: "POST",
           body: json({ answers: {} }),
-        }).then(setAssessment).catch(err => {
+        }).then(result => { setAssessment(result); setNotice("Time is up. Your assessment was submitted and your camera is now off."); }).catch(err => {
           submitStarted.current = false;
           setError(err.message);
         }).finally(() => setBusy(false));
@@ -1154,7 +1178,7 @@ function AssessmentDetailPage({ audience }) {
         body: json({ answers: answersRef.current }),
       });
       setAssessment(result);
-      setNotice("Your assessment has been submitted and evaluated.");
+      setNotice("Your assessment has been submitted. Your camera is now off.");
     } catch (err) {
       submitStarted.current = false;
       setError(err.message);
@@ -1200,8 +1224,8 @@ function AssessmentDetailPage({ audience }) {
   return <>
     <PageHeader
       eyebrow="ROLE-BASED ASSESSMENT"
-      title={assessment.job?.title || assessment.job_title || "Assessment"}
-      description={isCandidate ? `One attempt · ${assessment.duration_minutes} minutes · Results are evaluated automatically.` : `Candidate: ${assessment.candidate?.full_name || "Candidate"}${assessment.candidate?.email ? ` · ${assessment.candidate.email}` : ""}`}
+      title={isCandidate && ["submitted", "passed", "failed", "expired"].includes(assessment.status) ? "Assessment submitted" : assessment.job?.title || assessment.job_title || "Assessment"}
+      description={isCandidate && ["submitted", "passed", "failed", "expired"].includes(assessment.status) ? "Your answers have been submitted and your camera is off." : isCandidate ? `One attempt · ${assessment.duration_minutes} minutes · Results are evaluated automatically.` : `Candidate: ${assessment.candidate?.full_name || "Candidate"}${assessment.candidate?.email ? ` · ${assessment.candidate.email}` : ""}`}
       action={<Link className="button button-outline" to={backPath}>Back to assessments</Link>}
     />
     <Notice>{error}</Notice><Notice type="success">{notice}</Notice>
@@ -1254,7 +1278,7 @@ function AssessmentDetailPage({ audience }) {
       <div className="assessment-question-nav">{questions.map((question, index) => <button key={question.question_id} className={`${index === questionIndex ? "question-current " : ""}${answers[question.question_id] !== undefined ? "question-answered" : ""}`} onClick={() => setQuestionIndex(index)} aria-label={`Go to question ${index + 1}`}>{index + 1}</button>)}</div>
     </section>}
     {["submitted", "passed", "failed", "expired"].includes(assessment.status) && <section className="panel assessment-results">
-      <div className="assessment-result-heading"><div><span className="eyebrow">ASSESSMENT RESULT</span><h2>{isCandidate ? "Your assessment is complete." : `${assessment.candidate?.full_name || "Candidate"}'s assessment result`}</h2></div><span className={`status status-${assessment.result}`}>{assessment.result?.toUpperCase()}</span></div>
+      <div className="assessment-result-heading"><div><span className="eyebrow">ASSESSMENT RESULT</span><h2>{isCandidate ? "Your assessment was submitted successfully." : `${assessment.candidate?.full_name || "Candidate"}'s assessment result`}</h2></div><span className={`status status-${assessment.result}`}>{assessment.result?.toUpperCase()}</span></div>
       <div className="assessment-score"><strong>{resultPercentageLabel}%</strong><span>{assessment.passing_percentage ?? (assessment.total_marks ? assessment.passing_marks / assessment.total_marks * 100 : 70)}% passing threshold</span><div className="meter"><i style={{ width: `${resultPercentage}%` }} /></div></div>
       <div className="assessment-result-stats"><div><b>{assessment.correct_count}</b><span>Correct</span></div><div><b>{assessment.incorrect_count}</b><span>Incorrect</span></div><div><b>{assessment.unanswered_count}</b><span>Unanswered</span></div><div><b>{assessment.total_questions}</b><span>Total questions</span></div></div>
       <div className="assessment-eligibility"><span className={`status ${assessment.second_round_eligible ? "status-selected" : "status-rejected"}`}>{assessment.second_round_eligible ? "Eligible for second round" : "Not eligible for second round"}</span><span>{isCandidate ? "The recruiter decides whether to invite you; passing does not automatically select or hire you." : `Next-round decision: ${(assessment.second_round_decision || "pending").replaceAll("_", " ")}`}</span></div>
@@ -1442,7 +1466,7 @@ export default function App() {
     <Route path="/" element={<Navigate to="/home" replace />} /><Route path="/home" element={<Landing />} /><Route path="/login" element={<AuthPage mode="login" />} /><Route path="/register" element={<AuthPage mode="register" />} /><Route path="/forgot-password" element={<ForgotPasswordPage />} /><Route path="/reset-password" element={<ResetPasswordPage />} />
     <Route path="/jobs" element={<><PublicNav /><main className="public-jobs section-wrap"><JobsPage /></main></>} /><Route path="/jobs/:jobId" element={<><PublicNav /><main className="public-jobs section-wrap"><JobDetailPage /></main></>} />
     <Route path="/dashboard" element={<Protected><RoleHome /></Protected>} />
-    <Route path="/candidate" element={<Protected roles={["candidate"]}><DashboardLayout /></Protected>}><Route index element={<DashboardHome />} /><Route path="profile" element={<ProfilePage />} /><Route path="notifications" element={<NotificationsPage />} /><Route path="resume" element={<ResumePage />} /><Route path="jobs" element={<JobsPage />} /><Route path="saved" element={<SavedJobsPage />} /><Route path="applications" element={<ApplicationsPage />} /><Route path="applications/:applicationId" element={<CandidateApplicationDetailPage />} /><Route path="assessments" element={<AssessmentListPage audience="candidate" />} /><Route path="assessments/:assessmentId" element={<AssessmentDetailPage audience="candidate" />} /><Route path="interviews" element={<InterviewManagementPage />} /><Route path="analysis" element={<AnalysisPage />} /><Route path="settings" element={<SettingsPage />} /></Route>
+    <Route path="/candidate" element={<Protected roles={["candidate"]}><CandidateDashboardLayout /></Protected>}><Route index element={<DashboardHome />} /><Route path="profile" element={<ProfilePage />} /><Route path="notifications" element={<NotificationsPage />} /><Route path="resume" element={<ResumePage />} /><Route path="jobs" element={<JobsPage />} /><Route path="saved" element={<SavedJobsPage />} /><Route path="applications" element={<ApplicationsPage />} /><Route path="applications/:applicationId" element={<CandidateApplicationDetailPage />} /><Route path="assessments" element={<AssessmentListPage audience="candidate" />} /><Route path="assessments/:assessmentId" element={<AssessmentDetailPage audience="candidate" />} /><Route path="interviews" element={<InterviewManagementPage />} /><Route path="analysis" element={<AnalysisPage />} /><Route path="settings" element={<SettingsPage />} /></Route>
     <Route path="/recruiter" element={<Protected roles={["recruiter"]}><DashboardLayout /></Protected>}><Route index element={<DashboardHome />} /><Route path="company" element={<CompanyPage />} /><Route path="notifications" element={<NotificationsPage />} /><Route path="jobs" element={<RecruiterJobsPage />} /><Route path="applicants" element={<ApplicantsPage />} /><Route path="applicants/:applicationId" element={<ApplicantDetailPage />} /><Route path="assessments" element={<RecruiterAssessments />} /><Route path="question-bank" element={<RecruiterAssessments questionBankOnly />} /><Route path="assessments/:assessmentId" element={<AssessmentDetailPage audience="recruiter" />} /><Route path="interviews" element={<InterviewManagementPage />} /><Route path="settings" element={<SettingsPage />} /></Route>
     <Route path="/admin" element={<Protected roles={["admin"]}><DashboardLayout /></Protected>}><Route index element={<AdminPage />} /><Route path="notifications" element={<NotificationsPage />} /><Route path="users" element={<AdminPage mode="users" />} /><Route path="jobs" element={<AdminPage mode="jobs" />} /><Route path="companies" element={<AdminPage mode="companies" />} /><Route path="proctoring" element={<AdminProctoring />} /><Route path="settings" element={<SettingsPage />} /></Route>
     <Route path="*" element={<Navigate to="/home" replace />} />

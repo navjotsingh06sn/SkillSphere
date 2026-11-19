@@ -17,7 +17,9 @@ if config.config_file_name is not None:
 
 # Use the application database URL.
 # Escape percent signs because ConfigParser treats them as interpolation.
-database_url = str(get_async_database_url(use_unpooled=True))
+database_url = get_async_database_url(
+    use_unpooled=True,
+).render_as_string(hide_password=False)
 config.set_main_option(
     "sqlalchemy.url",
     database_url.replace("%", "%%"),
