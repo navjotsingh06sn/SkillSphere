@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
@@ -58,6 +59,10 @@ class CompanyInput(BaseModel):
     industry: str | None = None
     location: str | None = None
     contact_email: str | None = None
+
+
+class ActiveCompanyInput(BaseModel):
+    company_id: UUID
 
 
 class JobInput(BaseModel):

@@ -463,6 +463,7 @@ async def list_applications(
                     ["shortlisted", "pending_review"]
                 ),
                 Application.reconsideration_status == "requested",
+                Application.status == "rejected",
             ),
         ])
 

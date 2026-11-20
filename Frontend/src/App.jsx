@@ -108,25 +108,54 @@ function PublicNav() {
 }
 const navByRole = {
   candidate: [["Overview", "/candidate", LayoutDashboard], ["Notifications", "/candidate/notifications", Bell], ["My profile", "/candidate/profile", CircleUserRound], ["My resume", "/candidate/resume", FileText], ["Explore jobs", "/candidate/jobs", Search], ["Saved jobs", "/candidate/saved", Check], ["Applications", "/candidate/applications", BriefcaseBusiness], ["Assessments", "/candidate/assessments", Sparkles], ["Interviews", "/candidate/interviews", CalendarDays], ["AI analysis", "/candidate/analysis", Sparkles], ["Settings", "/candidate/settings", ShieldCheck]],
-  recruiter: [["Overview", "/recruiter", LayoutDashboard], ["Notifications", "/recruiter/notifications", Bell], ["Company profile", "/recruiter/company", Building2], ["My jobs", "/recruiter/jobs", BriefcaseBusiness], ["Applicants", "/recruiter/applicants", Users], ["Assessments", "/recruiter/assessments", Sparkles], ["Question bank", "/recruiter/question-bank", FileText], ["Interviews", "/recruiter/interviews", CalendarDays], ["Settings", "/recruiter/settings", ShieldCheck]],
+  recruiter: [["Overview", "/recruiter", LayoutDashboard], ["Notifications", "/recruiter/notifications", Bell], ["Company profile", "/recruiter/company", Building2], ["My posted jobs", "/recruiter/jobs", BriefcaseBusiness], ["Applicants", "/recruiter/applicants", Users], ["Assessments", "/recruiter/assessments", Sparkles], ["Question bank", "/recruiter/question-bank", FileText], ["Interviews", "/recruiter/interviews", CalendarDays], ["Settings", "/recruiter/settings", ShieldCheck]],
   admin: [["Overview", "/admin", LayoutDashboard], ["Notifications", "/admin/notifications", Bell], ["Manage users", "/admin/users", Users], ["Moderate jobs", "/admin/jobs", BriefcaseBusiness], ["Proctoring review", "/admin/proctoring", ShieldCheck], ["Settings", "/admin/settings", ShieldCheck]],
 };
 function DashboardLayout() {
   const { user, logout } = useAuth(); const [mobileOpen, setMobileOpen] = useState(false);
   const [badgeCounts, setBadgeCounts] = useState({ notifications: 0, jobs: 0 });
+  const [newJobsNotice, setNewJobsNotice] = useState(0);
+  const announcedJobs = useRef(0);
   const links = navByRole[user?.role] || [];
   const location = useLocation();
+  const isCandidateJobsPage = user?.role === "candidate" && location.pathname.startsWith("/candidate/jobs");
+  const jobsSeenKey = `skillsphere-jobs-last-seen-${user?.id || "candidate"}`;
   const currentLink = [...links].reverse().find(([, path]) => location.pathname === path || location.pathname.startsWith(path + "/"));
   const currentPage = currentLink?.[0] || "Overview";
   useEffect(() => {
     let active = true;
     const refresh = async () => {
       try {
+        let jobsRequest = Promise.resolve({ count: 0 });
+        if (user?.role === "candidate") {
+          if (isCandidateJobsPage) {
+            try { localStorage.setItem(jobsSeenKey, new Date().toISOString()); } catch { /* Clear the badge for this visit. */ }
+            announcedJobs.current = 0;
+            setNewJobsNotice(0);
+            setBadgeCounts(current => ({ ...current, jobs: 0 }));
+          } else {
+            let since = "";
+            try { since = localStorage.getItem(jobsSeenKey) || ""; } catch { /* Use the default recent-jobs window. */ }
+            const query = since ? `?since=${encodeURIComponent(since)}` : "";
+            jobsRequest = api(`/jobs/new-count${query}`);
+          }
+        }
         const [notifications, jobs] = await Promise.all([
           api("/notifications/unread-count"),
-          user?.role === "candidate" ? api("/jobs/new-count") : Promise.resolve({ count: 0 }),
+          jobsRequest,
         ]);
-        if (active) setBadgeCounts({ notifications: notifications.unread_count || 0, jobs: jobs.count || 0 });
+        if (!active) return;
+        const count = isCandidateJobsPage ? 0 : jobs.count || 0;
+        setBadgeCounts({ notifications: notifications.unread_count || 0, jobs: count });
+        if (user?.role === "candidate" && !isCandidateJobsPage) {
+          if (count > announcedJobs.current) {
+            announcedJobs.current = count;
+            setNewJobsNotice(count);
+          } else if (count === 0) {
+            announcedJobs.current = 0;
+            setNewJobsNotice(0);
+          }
+        }
       } catch { /* Keep the workspace usable when badge counts are temporarily unavailable. */ }
     };
     refresh();
@@ -134,19 +163,23 @@ function DashboardLayout() {
     window.addEventListener("focus", refresh);
     window.addEventListener("skillsphere:badges-refresh", refresh);
     return () => { active = false; window.clearInterval(timer); window.removeEventListener("focus", refresh); window.removeEventListener("skillsphere:badges-refresh", refresh); };
-  }, [user?.role]);
+  }, [user?.role, user?.id, location.pathname, isCandidateJobsPage, jobsSeenKey]);
   return <div className="dashboard-shell">
     {mobileOpen && <button className="drawer-scrim" onClick={() => setMobileOpen(false)} aria-label="Close menu" />}
     <aside className={"sidebar " + (mobileOpen ? "sidebar-open" : "")}>
       <Link className="brand sidebar-brand" to="/home"><SkillSphereMark size={18} />SkillSphere</Link>
-      <div className="sidebar-label">WORKSPACE</div><nav className="side-links">{links.map(([label, to, Icon]) => { const badge = to.endsWith("/notifications") ? badgeCounts.notifications : to === "/candidate/jobs" ? badgeCounts.jobs : 0; return <NavLink key={to} to={to} end={to === "/candidate" || to === "/recruiter" || to === "/admin"} onClick={() => setMobileOpen(false)} className={({ isActive }) => "side-link" + (isActive ? " side-link-active" : "")}><Icon size={17} /><span>{label}</span>{badge > 0 && <span className="nav-count-badge" aria-label={`${badge} ${label.toLowerCase()}`}>{badge > 99 ? "99+" : badge}</span>}</NavLink>; })}</nav>
+      <div className="sidebar-label">WORKSPACE</div><nav className="side-links">{links.map(([label, to, Icon]) => { const badge = to.endsWith("/notifications") ? badgeCounts.notifications : to === "/candidate/jobs" && !isCandidateJobsPage ? badgeCounts.jobs : 0; return <NavLink key={to} to={to} end={to === "/candidate" || to === "/recruiter" || to === "/admin"} onClick={() => setMobileOpen(false)} className={({ isActive }) => "side-link" + (isActive ? " side-link-active" : "")}><Icon size={17} /><span>{label}</span>{badge > 0 && <span className="nav-count-badge" aria-label={`${badge} ${label.toLowerCase()}`}>{badge > 99 ? "99+" : badge}</span>}</NavLink>; })}</nav>
       <div className="sidebar-bottom"><div className="sidebar-help"><div className="help-orb"><Sparkles size={16} /></div><b>Make your next move</b><span>Keep your profile fresh to find better matches.</span><Link to={user?.role === "candidate" ? "/candidate/profile" : "/candidate/jobs"}>Explore more <ArrowRight size={14} /></Link></div><button className="side-link side-logout" onClick={logout}><LogOut size={17} />Log out</button></div>
     </aside>
+    {newJobsNotice > 0 && !isCandidateJobsPage && <div className="candidate-new-jobs-popover" role="status">
+      <Link to="/candidate/jobs" onClick={() => setNewJobsNotice(0)}><span className="candidate-new-jobs-icon"><BriefcaseBusiness size={17} /></span><span><b>New jobs are available</b><small>{newJobsNotice} recently posted {newJobsNotice === 1 ? "job" : "jobs"}. Open Explore jobs to browse.</small></span></Link>
+      <button type="button" aria-label="Dismiss new jobs notice" onClick={() => setNewJobsNotice(0)}><X size={15} /></button>
+    </div>}
     <section className="workspace"><header className="dash-topbar">
       <button className="icon-button mobile-menu" onClick={() => setMobileOpen(!mobileOpen)} aria-label="Open navigation">{mobileOpen ? <X size={19} /> : <Menu size={19} />}</button>
       <div className="route-context"><span>{user.role} workspace</span><b>{currentPage}</b></div>
       <div className="top-search"><Search size={16} /><input placeholder="Search jobs, skills, companies..." onKeyDown={e => { if (e.key === "Enter" && user.role === "candidate") window.location.href = "/candidate/jobs?q=" + encodeURIComponent(e.currentTarget.value); }} /></div>
-      <div className="top-actions"><Link className="icon-button notification-bell-link" to={"/" + user.role + "/notifications"} aria-label={`Notifications${badgeCounts.notifications ? `, ${badgeCounts.notifications} unread` : ""}`}><Bell size={17} />{badgeCounts.notifications > 0 && <span className="bell-count-badge">{badgeCounts.notifications > 99 ? "99+" : badgeCounts.notifications}</span>}</Link><ThemeButton /><SoundButton /><span className="top-divider" /><span className="user-mini"><span className="avatar">{(user?.full_name || "S").slice(0, 1).toUpperCase()}</span><span><b>{user?.full_name || user?.email}</b><small>{user?.role}</small></span><ChevronDown size={15} /></span></div>
+      <div className="top-actions"><Link className="icon-button notification-bell-link" to={"/" + user.role + "/notifications"} aria-label={`Notifications${badgeCounts.notifications ? `, ${badgeCounts.notifications} unread` : ""}`}><Bell size={17} />{badgeCounts.notifications > 0 && <span className="bell-count-badge">{badgeCounts.notifications > 99 ? "99+" : badgeCounts.notifications}</span>}</Link><ThemeButton /><SoundButton /><span className="top-divider" /><span className="user-mini"><span className="avatar">{(user?.full_name || "S").slice(0, 1).toUpperCase()}</span><span><b>{user?.full_name || user?.email}</b><small>{user?.role}</small></span></span></div>
     </header><main className="page-content"><Outlet /></main></section>
   </div>;
 }
@@ -452,11 +485,87 @@ function SavedJobsPage() {
   return <><PageHeader eyebrow="BOOKMARKED ROLES" title="Saved for later." description="Roles you want to come back to." /><Notice>{error}</Notice>{items.length ? <div className="job-grid">{items.map(job => <article className="job-card" key={job.id}><h3>{job.title}</h3><p>{job.company_name} · {job.location}</p><div className="job-actions"><Link className="button button-outline" to={"/jobs/" + job.id}>View role</Link><button className="button button-quiet" onClick={() => remove(job.id)}>Remove saved</button></div></article>)}</div> : <Empty title="No saved roles yet" text="Save jobs from your search to keep them close." action={<Link className="button button-primary" to="/candidate/jobs">Explore jobs</Link>} />}</>;
 }
 function CompanyPage() {
-  const [form, setForm] = useState({ company_name: "", description: "", website: "", industry: "", location: "", contact_email: "" });
-  const [error, setError] = useState(""); const [message, setMessage] = useState("");
-  useEffect(() => { api("/recruiter/company").then(data => { if (data.company_name) setForm({ ...form, ...data }); }).catch(e => setError(e.message)); }, []);
-  async function save(e) { e.preventDefault(); setError(""); setMessage(""); try { await api("/recruiter/company", { method: "PUT", body: json(form) }); setMessage("Company profile saved."); } catch (err) { setError(err.message); } }
-  return <><PageHeader eyebrow="COMPANY PROFILE" title="Introduce your company." description="These details appear alongside the roles you publish." /><form className="panel edit-form" onSubmit={save}><Notice>{error}</Notice><Notice type="success">{message}</Notice><div className="form-grid"><label>Company name<input required value={form.company_name} onChange={e => setForm({ ...form, company_name: e.target.value })} /></label><label>Industry<input value={form.industry || ""} onChange={e => setForm({ ...form, industry: e.target.value })} /></label><label>Website<input type="url" value={form.website || ""} onChange={e => setForm({ ...form, website: e.target.value })} /></label><label>Location<input value={form.location || ""} onChange={e => setForm({ ...form, location: e.target.value })} /></label><label>Contact email<input type="email" value={form.contact_email || ""} onChange={e => setForm({ ...form, contact_email: e.target.value })} /></label><label className="wide-field">Description<textarea rows="5" value={form.description || ""} onChange={e => setForm({ ...form, description: e.target.value })} /></label></div><button className="button button-primary">Save company</button></form></>;
+  const emptyForm = { company_name: "", description: "", website: "", industry: "", location: "", contact_email: "" };
+  const [form, setForm] = useState(emptyForm);
+  const [companies, setCompanies] = useState([]);
+  const [activeCompanyId, setActiveCompanyId] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+
+  async function loadCompanies() {
+    setLoading(true);
+    try {
+      const data = await api("/recruiter/companies");
+      const profiles = data.companies || [];
+      setCompanies(profiles);
+      const selectedId = data.active_company_id || "";
+      setActiveCompanyId(selectedId);
+      const selected = profiles.find(company => company.id === selectedId);
+      setForm(selected ? { ...emptyForm, ...selected, company_name: selected.company_name || selected.name || "" } : emptyForm);
+      setError("");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { loadCompanies(); }, []);
+
+  async function activateCompany(companyId) {
+    const selected = companies.find(company => company.id === companyId);
+    if (!selected || companyId === activeCompanyId) return;
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      await api("/recruiter/company/active", { method: "PUT", body: json({ company_id: companyId }) });
+      setActiveCompanyId(companyId);
+      setForm({ ...emptyForm, ...selected, company_name: selected.company_name || selected.name || "" });
+      setMessage(`${selected.company_name || selected.name} is now active. New jobs will use this company.`);
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  async function save(event) {
+    event.preventDefault();
+    setError("");
+    setMessage("");
+    setBusy(true);
+    try {
+      if (creating) {
+        await api("/recruiter/companies", { method: "POST", body: json(form) });
+        setCreating(false);
+        setMessage("Company profile created and selected as active.");
+      } else {
+        await api("/recruiter/company", { method: "PUT", body: json(form) });
+        setMessage("Company profile saved.");
+      }
+      await loadCompanies();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  function startNewCompany() {
+    setCreating(true);
+    setForm(emptyForm);
+    setError("");
+    setMessage("");
+  }
+
+  return <>
+    <PageHeader eyebrow="COMPANY PROFILES" title="Manage your companies." description="Save multiple company profiles and choose which one to use for new job posts. Assessments use the company attached to the selected job." action={<button className="button button-primary" onClick={startNewCompany}>Add company profile</button>} />
+    <Notice>{error}</Notice><Notice type="success">{message}</Notice>
+    {!creating && companies.length > 0 && <section className="panel company-profile-switcher"><label>Active company<select value={activeCompanyId} disabled={busy} onChange={event => activateCompany(event.target.value)}>{companies.map(company => <option value={company.id} key={company.id}>{company.company_name || company.name}</option>)}</select></label><small>New job posts will be associated with the active company. Existing jobs keep their original company.</small></section>}
+    {loading ? <Loading /> : <form className="panel edit-form" onSubmit={save}>
+      <h3>{creating ? "Create a company profile" : form.company_name ? `Edit ${form.company_name}` : "Create your first company profile"}</h3>
+      <div className="form-grid"><label>Company name<input required minLength={2} maxLength={160} value={form.company_name} onChange={event => setForm({ ...form, company_name: event.target.value })} /></label><label>Industry<input value={form.industry || ""} onChange={event => setForm({ ...form, industry: event.target.value })} /></label><label>Website<input type="url" value={form.website || ""} onChange={event => setForm({ ...form, website: event.target.value })} /></label><label>Location<input value={form.location || ""} onChange={event => setForm({ ...form, location: event.target.value })} /></label><label>Contact email<input type="email" value={form.contact_email || ""} onChange={event => setForm({ ...form, contact_email: event.target.value })} /></label><label className="wide-field">Description<textarea rows="5" value={form.description || ""} onChange={event => setForm({ ...form, description: event.target.value })} /></label></div>
+      <div className="company-profile-actions"><button className="button button-primary" disabled={busy}>{busy ? "Saving…" : creating || !companies.length ? "Create company profile" : "Save changes"}</button>{creating && companies.length > 0 && <button type="button" className="button button-outline" disabled={busy} onClick={() => { setCreating(false); const selected = companies.find(company => company.id === activeCompanyId); setForm(selected ? { ...emptyForm, ...selected, company_name: selected.company_name || selected.name || "" } : emptyForm); }}>Cancel</button>}</div>
+    </form>}
+  </>;
 }
 function RecruiterJobsPage() {
   const [items, setItems] = useState([]); const [showForm, setShowForm] = useState(false); const [editId, setEditId] = useState(null); const [error, setError] = useState(""); const [message, setMessage] = useState("");
@@ -473,7 +582,7 @@ function RecruiterJobsPage() {
   async function setStatus(job, next) { try { await api("/jobs/" + job.id, { method: "PUT", body: json({ ...job, status: next }) }); load(); } catch (e) { setError(e.message); } }
   async function remove(job) { if (!window.confirm("Delete this role?")) return; try { await api("/jobs/" + job.id, { method: "DELETE" }); load(); } catch (e) { setError(e.message); } }
   return <><PageHeader eyebrow="ROLE MANAGEMENT" title="Your open opportunities." description="Publish a role to make it visible to job seekers." action={<button className="button button-primary" onClick={() => { setEditId(null); setShowForm(!showForm); }}>Post a job <ArrowRight size={16} /></button>} /><Notice>{error}</Notice><Notice type="success" autoHideMs={3200}>{message}</Notice>
-    {showForm && <form className="panel edit-form" onSubmit={createJob}><h3>{editId ? "Edit role" : "New role"}</h3><div className="form-grid"><label>Title<input required value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} /></label><label>Location<input required value={form.location} onChange={e => setForm({ ...form, location: e.target.value })} /></label><label>Job type<select value={form.job_type} onChange={e => setForm({ ...form, job_type: e.target.value })}><option>Full-time</option><option>Part-time</option><option>Contract</option><option>Internship</option><option>Remote</option></select></label><label>Required skills<input value={form.required_skills} onChange={e => setForm({ ...form, required_skills: e.target.value })} placeholder="React, TypeScript" /></label><label>Minimum experience<input type="number" min="0" value={form.experience_min} onChange={e => setForm({ ...form, experience_min: e.target.value })} /></label><label>Maximum experience<input type="number" min="0" value={form.experience_max} onChange={e => setForm({ ...form, experience_max: e.target.value })} /></label><label>Salary minimum<input type="number" min="0" value={form.salary_min} onChange={e => setForm({ ...form, salary_min: e.target.value })} /></label><label>Salary maximum<input type="number" min="0" value={form.salary_max} onChange={e => setForm({ ...form, salary_max: e.target.value })} /></label><label>Application deadline<input type="datetime-local" value={form.application_deadline} onChange={e => setForm({ ...form, application_deadline: e.target.value })} /></label><label className="wide-field">Responsibilities <small>One item per line</small><textarea rows="3" value={form.responsibilities_text} onChange={e => setForm({ ...form, responsibilities_text: e.target.value })} /></label><label className="wide-field">Requirements <small>One item per line</small><textarea rows="3" value={form.requirements_text} onChange={e => setForm({ ...form, requirements_text: e.target.value })} /></label><label className="wide-field">Description<textarea required minLength="10" rows="5" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} /></label></div><button className="button button-primary">{editId ? "Save changes" : "Publish role"}</button></form>}
+    {showForm && <form className="panel edit-form" onSubmit={createJob}><h3>{editId ? "Edit role" : "New role"}</h3><div className="form-grid"><label>Title<input required value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} /></label><label>Location<input required value={form.location} onChange={e => setForm({ ...form, location: e.target.value })} /></label><label>Job type<select value={form.job_type} onChange={e => setForm({ ...form, job_type: e.target.value })}><option>Full-time</option><option>Part-time</option><option>Contract</option><option>Internship</option><option>Remote</option></select></label><label>Required skills<input value={form.required_skills} onChange={e => setForm({ ...form, required_skills: e.target.value })} placeholder="React, TypeScript" /></label><label>Minimum experience<input type="number" min="0" value={form.experience_min} onChange={e => setForm({ ...form, experience_min: e.target.value })} /></label><label>Maximum experience<input type="number" min="0" value={form.experience_max} onChange={e => setForm({ ...form, experience_max: e.target.value })} /></label><label>Salary minimum<input className="salary-manual-input" type="number" min="0" value={form.salary_min} onChange={e => setForm({ ...form, salary_min: e.target.value })} /></label><label>Salary maximum<input className="salary-manual-input" type="number" min="0" value={form.salary_max} onChange={e => setForm({ ...form, salary_max: e.target.value })} /></label><label>Application deadline<input type="datetime-local" value={form.application_deadline} onChange={e => setForm({ ...form, application_deadline: e.target.value })} /></label><label className="wide-field">Responsibilities <small>One item per line</small><textarea rows="3" value={form.responsibilities_text} onChange={e => setForm({ ...form, responsibilities_text: e.target.value })} /></label><label className="wide-field">Requirements <small>One item per line</small><textarea rows="3" value={form.requirements_text} onChange={e => setForm({ ...form, requirements_text: e.target.value })} /></label><label className="wide-field">Description<textarea required minLength="10" rows="5" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} /></label></div><button className="button button-primary">{editId ? "Save changes" : "Publish role"}</button></form>}
     <section className="panel">{items.length ? <div className="table-wrap"><table><thead><tr><th>Role</th><th>Applicants</th><th>Status</th><th>Actions</th></tr></thead><tbody>{items.map(job => <tr key={job.id}><td><b>{job.title}</b><small>{job.location}</small></td><td><Link to={"/recruiter/applicants?job_id=" + job.id}>Review applicants</Link></td><td><span className={"status status-" + job.status}>{job.status}</span></td><td className="table-actions"><button className="text-button" onClick={() => editJob(job)}>Edit</button>{job.status === "published" ? <button className="text-button" onClick={() => setStatus(job, "closed")}>Close</button> : <button className="text-button" onClick={() => setStatus(job, "published")}>Publish</button>}<button className="text-button danger-text" onClick={() => remove(job)}>Delete</button></td></tr>)}</tbody></table></div> : <Empty title="No roles posted" text="Create your first job to start receiving applications." />}</section></>;
 }
 function ApplicantsPage() {
@@ -499,7 +608,7 @@ function ApplicantsPage() {
 
   useEffect(() => {
     api("/recruiter/jobs")
-      .then(data => setJobs(data.filter(job => job.status === "published")))
+      .then(data => setJobs(data))
       .catch(err => setError(err.message));
     load();
   }, []);
@@ -519,10 +628,10 @@ function ApplicantsPage() {
   }
 
   return <>
-    <PageHeader eyebrow="CANDIDATE PIPELINE" title="People who applied." description="Review applicants for your published roles, compare screening scores, and manage each application." />
+    <PageHeader eyebrow="CANDIDATE PIPELINE" title="People who applied." description="Review applicants across your roles, including rejected candidates and applications on closed jobs." />
     <form className="filter-bar applicant-filters" onSubmit={event => { event.preventDefault(); load(); }}>
-      <label><select aria-label="Filter applicants by job" value={filters.job_id} onChange={event => setFilters({ ...filters, job_id: event.target.value })}><option value="">All published roles</option>{jobs.map(job => <option value={job.id} key={job.id}>{job.title}</option>)}</select></label>
-      <label><select aria-label="Filter applicants by status" value={filters.status} onChange={event => setFilters({ ...filters, status: event.target.value })}><option value="">All reviewable statuses</option>{["applied", "under_review", "shortlisted", "interview", "selected", "rejected"].map(value => <option value={value} key={value}>{value.replaceAll("_", " ")}</option>)}</select></label>
+      <label><select aria-label="Filter applicants by job" value={filters.job_id} onChange={event => setFilters({ ...filters, job_id: event.target.value })}><option value="">All your jobs</option>{jobs.map(job => <option value={job.id} key={job.id}>{job.title}</option>)}</select></label>
+      <label><select aria-label="Filter applicants by status" value={filters.status} onChange={event => setFilters({ ...filters, status: event.target.value })}><option value="">All statuses</option>{["applied", "under_review", "shortlisted", "interview", "selected", "rejected"].map(value => <option value={value} key={value}>{value.replaceAll("_", " ")}</option>)}</select></label>
       <label><input aria-label="Minimum match score" type="number" min="0" max="100" value={filters.min_score} onChange={event => setFilters({ ...filters, min_score: event.target.value })} placeholder="Min score %" /></label>
       <label><input aria-label="Maximum match score" type="number" min="0" max="100" value={filters.max_score} onChange={event => setFilters({ ...filters, max_score: event.target.value })} placeholder="Max score %" /></label>
       <button className="button button-primary">Filter applicants</button>
@@ -546,8 +655,8 @@ function ApplicantDetailPage() {
   const [assessmentResult, setAssessmentResult] = useState(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [rejectionReason, setRejectionReason] = useState("");
   const [showSchedule, setShowSchedule] = useState(false);
+  const navigate = useNavigate();
   const [schedule, setSchedule] = useState({
     scheduled_at: "",
     duration_minutes: "30",
@@ -588,7 +697,7 @@ function ApplicantDetailPage() {
     return () => { cancelled = true; };
   }, [applicationId]);
 
-  async function updateStatus(nextStatus) {
+  async function updateStatus(nextStatus, rejectionReason = "") {
     setBusy(true);
     setError("");
     try {
@@ -596,15 +705,27 @@ function ApplicantDetailPage() {
         method: "PUT",
         body: json({
           status: nextStatus,
-          rejection_reason: nextStatus === "rejected" ? rejectionReason : null,
+          rejection_reason: nextStatus === "rejected" ? (rejectionReason.trim() || null) : null,
         }),
       });
       await load();
+      return true;
     } catch (err) {
       setError(err.message);
+      return false;
     } finally {
       setBusy(false);
     }
+  }
+
+  async function rejectCandidate() {
+    const reason = window.prompt("Rejection reason (optional):");
+    if (reason === null) return;
+    await updateStatus("rejected", reason);
+  }
+
+  async function shortlistForAssessment() {
+    if (await updateStatus("shortlisted")) navigate("/recruiter/assessments");
   }
 
   async function resendShortlistEmail() {
@@ -695,11 +816,9 @@ function ApplicantDetailPage() {
     </section>
     <section className="panel applicant-actions"><div className="panel-heading"><div><span className="eyebrow">RECRUITER ACTIONS</span><h3>Update this application</h3></div></div>
       <div className="applicant-action-buttons">
-        {canReview && application.status !== "shortlisted" && <button className="button button-primary" disabled={busy} onClick={() => updateStatus("shortlisted")}>Shortlist candidate</button>}
-        {canReview && application.status !== "selected" && <button className="button button-primary" disabled={busy} onClick={() => updateStatus("selected")}>Select candidate</button>}
-        {canReview && <button className="button button-outline" disabled={busy} onClick={() => setShowSchedule(!showSchedule)}>{interviews.length ? "Interview scheduled" : "Schedule interview"}</button>}
+        {canReview && !["selected", "interview"].includes(application.status) && !(application.status === "shortlisted" && application.recruiter_decision === "accepted") && <><button className="button button-primary" disabled={busy} onClick={() => updateStatus("selected")}>Select candidate</button><button className="button button-outline" disabled={busy} onClick={rejectCandidate}>Reject candidate</button></>}
+        {canReview && (["selected", "interview"].includes(application.status) || (application.status === "shortlisted" && application.recruiter_decision === "accepted")) && <><button className="button button-primary" disabled={busy} onClick={shortlistForAssessment}>Shortlist for assessment</button><button className="button button-outline" disabled={busy} onClick={() => setShowSchedule(!showSchedule)}>{interviews.length ? "Interview scheduled" : "Schedule interview"}</button></>}
       </div>
-      {canReview && application.status !== "rejected" && <div className="rejection-controls"><label>Rejection reason<input maxLength="1000" value={rejectionReason} onChange={event => setRejectionReason(event.target.value)} placeholder="Explain the decision to the candidate" /></label><button className="button button-outline" disabled={busy || rejectionReason.trim().length === 0} onClick={() => updateStatus("rejected")}>Reject candidate</button></div>}
       {showSchedule && <form className="edit-form interview-form" onSubmit={scheduleInterview}><div className="form-grid">
         <label>Interview date and time<input required type="datetime-local" value={schedule.scheduled_at} onChange={event => setSchedule({ ...schedule, scheduled_at: event.target.value })} /></label>
         <label>Duration (minutes)<input required type="number" min="15" max="240" value={schedule.duration_minutes} onChange={event => setSchedule({ ...schedule, duration_minutes: event.target.value })} /></label>

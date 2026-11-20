@@ -172,6 +172,22 @@ class RecruiterProfile(Base):
     )
 
 
+class RecruiterCompany(Base):
+    __tablename__ = "recruiter_companies"
+
+    recruiter_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+
 # ==================================================
 # 5. JOBS
 # ==================================================

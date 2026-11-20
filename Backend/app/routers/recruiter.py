@@ -11,13 +11,14 @@ from app.models import (
     Company,
     Interview,
     Job,
+    RecruiterCompany,
     RecruiterProfile,
     Resume,
     ResumeAnalysis,
     User,
 )
 from app.pg_utils import parse_uuid, serialize_model
-from app.schemas import CompanyInput
+from app.schemas import ActiveCompanyInput, CompanyInput
 
 router = APIRouter(prefix="/recruiter", tags=["recruiters"])
 
@@ -74,6 +75,94 @@ async def get_company(
     return format_company_response(company)
 
 
+@router.get("/companies")
+async def list_companies(
+    user: dict = Depends(recruiter_required),
+    db: AsyncSession = Depends(get_database),
+):
+    recruiter_uuid = parse_uuid(user["id"], "recruiter id")
+    profile = await db.scalar(
+        select(RecruiterProfile).where(RecruiterProfile.user_id == recruiter_uuid)
+    )
+    active_company_id = profile.company_id if profile else None
+    rows = (await db.execute(
+        select(Company)
+        .join(RecruiterCompany, RecruiterCompany.company_id == Company.id)
+        .where(RecruiterCompany.recruiter_id == recruiter_uuid)
+        .order_by(Company.name.asc())
+    )).scalars().all()
+    return {
+        "companies": [
+            {**format_company_response(company), "is_active": company.id == active_company_id}
+            for company in rows
+        ],
+        "active_company_id": str(active_company_id) if active_company_id else None,
+    }
+
+
+@router.post("/companies", status_code=201)
+async def create_company_profile(
+    data: CompanyInput,
+    user: dict = Depends(recruiter_required),
+    db: AsyncSession = Depends(get_database),
+):
+    recruiter_uuid = parse_uuid(user["id"], "recruiter id")
+    profile = await db.scalar(
+        select(RecruiterProfile).where(RecruiterProfile.user_id == recruiter_uuid)
+    )
+    if not profile:
+        profile = RecruiterProfile(user_id=recruiter_uuid)
+        db.add(profile)
+        await db.flush()
+
+    company = Company(
+        name=data.company_name.strip(),
+        description=data.description,
+        website=data.website,
+        location=data.location,
+        extra_data={"industry": data.industry, "contact_email": data.contact_email},
+    )
+    db.add(company)
+    await db.flush()
+    db.add(RecruiterCompany(recruiter_id=recruiter_uuid, company_id=company.id))
+    profile.company_id = company.id
+    profile.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(company)
+    return {**format_company_response(company), "is_active": True}
+
+
+@router.put("/company/active")
+async def select_active_company(
+    data: ActiveCompanyInput,
+    user: dict = Depends(recruiter_required),
+    db: AsyncSession = Depends(get_database),
+):
+    recruiter_uuid = parse_uuid(user["id"], "recruiter id")
+    company = await db.scalar(
+        select(Company)
+        .join(RecruiterCompany, RecruiterCompany.company_id == Company.id)
+        .where(
+            RecruiterCompany.recruiter_id == recruiter_uuid,
+            Company.id == data.company_id,
+        )
+    )
+    if not company:
+        raise HTTPException(status_code=404, detail="Company profile not found.")
+
+    profile = await db.scalar(
+        select(RecruiterProfile).where(RecruiterProfile.user_id == recruiter_uuid)
+    )
+    if not profile:
+        profile = RecruiterProfile(user_id=recruiter_uuid)
+        db.add(profile)
+        await db.flush()
+    profile.company_id = company.id
+    profile.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    return {**format_company_response(company), "is_active": True}
+
+
 @router.put("/company")
 async def save_company(
     data: CompanyInput,
@@ -118,8 +207,15 @@ async def save_company(
         db.add(company)
         await db.flush()
         profile.company_id = company.id
+        db.add(RecruiterCompany(recruiter_id=recruiter_uuid, company_id=company.id))
 
     else:
+        association = await db.get(
+            RecruiterCompany,
+            {"recruiter_id": recruiter_uuid, "company_id": company.id},
+        )
+        if not association:
+            db.add(RecruiterCompany(recruiter_id=recruiter_uuid, company_id=company.id))
         company.name = data.company_name.strip()
         company.description = data.description
         company.website = data.website
@@ -296,26 +392,23 @@ async def applicants(
     recruiter_uuid = parse_uuid(user["id"], "recruiter id")
 
     result = await db.execute(
-        select(Job.id).where(
-            Job.recruiter_id == recruiter_uuid,
-            Job.status == "published",
-        )
+        select(Job.id).where(Job.recruiter_id == recruiter_uuid)
     )
 
-    published_job_ids = result.scalars().all()
+    recruiter_job_ids = result.scalars().all()
 
-    if not published_job_ids:
+    if not recruiter_job_ids:
         return []
 
     conditions = [
         Application.recruiter_id == recruiter_uuid,
-        Application.job_id.in_(published_job_ids),
+        Application.job_id.in_(recruiter_job_ids),
     ]
 
     if job_id:
         requested_job_id = parse_uuid(job_id, "job id")
 
-        if requested_job_id not in published_job_ids:
+        if requested_job_id not in recruiter_job_ids:
             return []
 
         conditions.append(

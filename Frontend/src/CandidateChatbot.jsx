@@ -4,6 +4,29 @@ import { api, json } from "./api.js";
 
 const SUGGESTIONS = ["How can I prepare for an interview?", "What does my application status mean?", "How can I improve my profile?"];
 
+function inlineText(text, key) {
+  return text.split(/(\*\*[^*]+?\*\*|`[^`]+`|\*[^*\n]+?\*)/g).map((part, index) => {
+    const partKey = `${key}-${index}`;
+    if (part.startsWith("**") && part.endsWith("**")) return <strong key={partKey}>{part.slice(2, -2)}</strong>;
+    if (part.startsWith("`")) return <code key={partKey}>{part.slice(1, -1)}</code>;
+    if (part.startsWith("*") && part.endsWith("*")) return <em key={partKey}>{part.slice(1, -1)}</em>;
+    return part;
+  });
+}
+
+function FormattedAssistantMessage({ content }) {
+  const lines = String(content || "").replace(/\r/g, "").split("\n");
+  return <div className="chat-message-rich">{lines.map((rawLine, index) => {
+    const line = rawLine.trim();
+    if (!line) return <div className="chat-message-gap" key={index} />;
+    const heading = line.match(/^#{1,3}\s+(.+)$/);
+    if (heading) return <h4 key={index}>{inlineText(heading[1], `h-${index}`)}</h4>;
+    const bullet = line.match(/^(?:([-*•])|(\d+[.)]))\s+(.*)$/);
+    if (bullet) return <div className="chat-message-list-item" key={index}><span>{bullet[2] || "•"}</span><span>{inlineText(bullet[3], `b-${index}`)}</span></div>;
+    return <p key={index}>{inlineText(line, `p-${index}`)}</p>;
+  })}</div>;
+}
+
 function dateLabel(value) {
   if (!value) return "";
   const date = new Date(value);
@@ -143,7 +166,7 @@ export default function CandidateChatbot() {
       {tab === "chat" ? <div className="chatbot-chat-view">
         <div className="chatbot-tools"><label><span className="sr-only">Conversation history</span><select aria-label="Conversation history" value={conversationId} onChange={e => e.target.value ? chooseConversation(e.target.value) : (setConversationId(""), setMessages([]))}><option value="">New conversation</option>{conversations.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label><button className="chatbot-icon-action" onClick={newConversation} title="New conversation" aria-label="New conversation"><Plus size={17} /></button><button className="chatbot-icon-action" onClick={clearHistory} title="Clear history" aria-label="Clear chat history"><Trash2 size={16} /></button></div>
         <div className="chatbot-messages" ref={scrollRef} aria-live="polite">
-          {loading ? <div className="chatbot-state"><span className="spinner" /> Loading your chat…</div> : messages.length ? messages.map(message => <div key={message.id} className={`chat-message ${message.role === "user" ? "chat-message-user" : "chat-message-assistant"}`}>{message.role !== "user" && <span className="chat-message-avatar"><Bot size={14} /></span>}<div className="chat-message-bubble">{message.content}<small>{dateLabel(message.created_at)}</small></div></div>) : <div className="chatbot-welcome"><span className="chatbot-welcome-icon"><Sparkles size={19} /></span><b>A little clarity goes a long way.</b><p>Ask about SkillSphere, preparing for interviews, or your application progress.</p><div className="chatbot-suggestions">{SUGGESTIONS.map(text => <button key={text} onClick={() => setDraft(text)}>{text}</button>)}</div></div>}
+          {loading ? <div className="chatbot-state"><span className="spinner" /> Loading your chat…</div> : messages.length ? messages.map(message => <div key={message.id} className={`chat-message ${message.role === "user" ? "chat-message-user" : "chat-message-assistant"}`}>{message.role !== "user" && <span className="chat-message-avatar"><Bot size={14} /></span>}<div className={`chat-message-bubble${message.role === "user" ? "" : " chat-message-rich-bubble"}`}>{message.role === "user" ? message.content : <FormattedAssistantMessage content={message.content} />}<small>{dateLabel(message.created_at)}</small></div></div>) : <div className="chatbot-welcome"><span className="chatbot-welcome-icon"><Sparkles size={19} /></span><b>A little clarity goes a long way.</b><p>Ask about SkillSphere, preparing for interviews, or your application progress.</p><div className="chatbot-suggestions">{SUGGESTIONS.map(text => <button key={text} onClick={() => setDraft(text)}>{text}</button>)}</div></div>}
           {sending && <div className="chat-message chat-message-assistant"><span className="chat-message-avatar"><Bot size={14} /></span><div className="chat-message-bubble chatbot-typing"><i /><i /><i /></div></div>}
         </div>
         <form className="chatbot-compose" onSubmit={send}><textarea value={draft} maxLength={2000} rows={1} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} placeholder="Ask your assistant…" aria-label="Message"/><button type="submit" disabled={!draft.trim() || sending} aria-label="Send message"><Send size={17} /></button></form>

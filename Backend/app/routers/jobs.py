@@ -14,10 +14,16 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
 @router.get("/new-count")
-async def new_job_count(db: AsyncSession = Depends(get_database)):
-    since = datetime.now(timezone.utc) - timedelta(days=7)
+async def new_job_count(
+    since: datetime | None = Query(default=None),
+    db: AsyncSession = Depends(get_database),
+):
+    if since is None:
+        since = datetime.now(timezone.utc) - timedelta(days=7)
+    elif since.tzinfo is None:
+        since = since.replace(tzinfo=timezone.utc)
     count = await db.scalar(select(func.count(Job.id)).where(
-        Job.status == "published", Job.created_at >= since, Job.is_demo.is_(False)
+        Job.status == "published", Job.created_at > since, Job.is_demo.is_(False)
     ))
     return {"count": int(count or 0), "window_days": 7}
 

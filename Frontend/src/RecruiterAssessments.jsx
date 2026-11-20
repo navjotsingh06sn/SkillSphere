@@ -27,6 +27,7 @@ async function request(path, options = {}) {
 
 export default function RecruiterAssessments({ questionBankOnly = false }) {
   const [jobs, setJobs] = useState([]);
+  const [company, setCompany] = useState(null);
   const [templates, setTemplates] = useState([]);
   const [bankQuestions, setBankQuestions] = useState([]);
   const [generatedQuestions, setGeneratedQuestions] = useState([]);
@@ -82,13 +83,15 @@ export default function RecruiterAssessments({ questionBankOnly = false }) {
     setError("");
 
     try {
-      const [jobData, templateData, bankData] = await Promise.all([
+      const [jobData, templateData, bankData, companyData] = await Promise.all([
         request("/recruiter/jobs"),
         request("/assessments/templates"),
         request("/assessments/question-bank"),
+        request("/recruiter/company"),
       ]);
 
       setJobs(Array.isArray(jobData) ? jobData : []);
+      setCompany(companyData || null);
       setTemplates(templateData.assessments || []);
       setBankQuestions(bankData.questions || []);
     } catch (err) {
@@ -101,6 +104,9 @@ export default function RecruiterAssessments({ questionBankOnly = false }) {
   useEffect(() => {
     loadData();
   }, []);
+
+  const selectedJob = jobs.find(job => job.id === form.job_id);
+  const senderCompanyName = selectedJob?.company_name || company?.company_name;
 
   const visibleBankQuestions = bankQuestions.filter((question) => {
     const search = bankSearch.trim().toLowerCase();
@@ -325,6 +331,12 @@ export default function RecruiterAssessments({ questionBankOnly = false }) {
 
       {error && <div className="assessment-error">{error}</div>}
       {notice && <div className="assessment-success">{notice}</div>}
+
+      {!questionBankOnly && <section className="assessment-panel assessment-company-banner">
+        <span className="assessment-company-mark">{(senderCompanyName || "C").slice(0, 1).toUpperCase()}</span>
+        <div><span className="eyebrow">ASSESSMENT SENDING AS</span><strong>{senderCompanyName || "Company profile not set"}</strong><small>{selectedJob ? `Assessment for ${selectedJob.title}.` : company?.industry || "Set up your company profile before publishing an assessment."}</small></div>
+        {!senderCompanyName && <Link className="button button-outline" to="/recruiter/company">Create company profile</Link>}
+      </section>}
 
       {!questionBankOnly && (<section className="assessment-panel">
         <h3>Create Assessment</h3>
