@@ -1,6 +1,7 @@
 
 import random
 import re
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
@@ -1187,7 +1188,7 @@ async def assign_assessment_to_candidates(
 
     results = []
     now = utcnow()
-    source_extra = dict(source.extra_data or {})
+    source_extra = deepcopy(source.extra_data or {})
 
     if not source_extra.get("questions") or not source_extra.get("answer_key"):
         raise ValueError("Template questions or answer key are missing.")
@@ -1241,7 +1242,7 @@ async def assign_assessment_to_candidates(
                     "This application already has an assessment assigned from another template."
                 )
 
-            extra = dict(source_extra)
+            extra = deepcopy(source_extra)
             extra.update({
                 "answers": {},
                 "attempt_count": 0,
@@ -1400,17 +1401,26 @@ async def save_assessment_answers(
 
     extra = dict(model.extra_data or {})
     questions = extra.get("questions") or []
-    existing_answers = dict(extra.get("answers") or {})
+    answer_key = extra.get("answer_key") or {}
+    if not questions or not answer_key:
+        raise ValueError("Assessment questions or answer key are unavailable.")
 
+    # Older assignments may have JSON question snapshots but no normalized
+    # rows (or only a partial set). Repair those records before saving answers.
+    question_models, question_id_map = await _ensure_assessment_question_rows(
+        database, model, extra, questions, answer_key
+    )
+    existing_answers = dict(extra.get("answers") or {})
     lookup = {
-        str(q["question_id"]): len(q.get("options") or [])
-        for q in questions
+        str(question["question_id"]): len(question.get("options") or [])
+        for question in questions
     }
 
     normalized_updates = {}
 
     for question_id, selected in (answers or {}).items():
-        question_id = str(question_id)
+        submitted_id = str(question_id)
+        question_id = question_id_map.get(submitted_id, submitted_id)
 
         if question_id not in lookup:
             raise ValueError("An answer references an invalid question.")
@@ -1429,14 +1439,6 @@ async def save_assessment_answers(
 
     model.extra_data = extra
     model.updated_at = now
-
-    question_models = (
-        await database.scalars(
-            select(AssessmentQuestion).where(
-                AssessmentQuestion.assessment_id == model.id
-            )
-        )
-    ).all()
 
     question_lookup = {str(q.id): q for q in question_models}
 

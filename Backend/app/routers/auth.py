@@ -24,8 +24,6 @@ from app.schemas import (
 )
 from app.security import create_access_token, hash_password, verify_password
 from app.services.smtp import EmailDeliveryError, send_smtp_email_sync
-from app.services.smtp import EmailDeliveryError, send_smtp_email_sync
-from app.services.smtp import EmailDeliveryError, send_smtp_email_sync
 
 logger = logging.getLogger(__name__)
 

@@ -232,6 +232,8 @@ async def candidate_dashboard(
             app_data["job_title"] = job_row.title
             app_data["company_name"] = job_row.company_name
             app_data["location"] = job_row.location
+            app_data["experience_requirement"] = job_row.experience_requirement
+            app_data["expected_salary"] = job_row.expected_salary
 
         recent.append(app_data)
 

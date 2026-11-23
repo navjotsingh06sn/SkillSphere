@@ -19,6 +19,11 @@ def send_smtp_email_sync(
 ) -> str:
     host = settings.smtp_host.strip()
     sender = settings.smtp_from_email.strip()
+    password = settings.smtp_password.strip()
+    # Google displays app passwords in four-character groups; SMTP expects the
+    # same credential without the visual separators.
+    if host.lower().endswith("gmail.com"):
+        password = "".join(password.split())
     if not host or not sender:
         raise EmailDeliveryError(
             "SMTP is not configured. Set SMTP_HOST and SMTP_FROM_EMAIL."
@@ -53,7 +58,7 @@ def send_smtp_email_sync(
                 server.starttls(context=context)
                 server.ehlo()
             if settings.smtp_username:
-                server.login(settings.smtp_username, settings.smtp_password)
+                server.login(settings.smtp_username, password)
             server.send_message(message)
     except Exception as exc:
         raise EmailDeliveryError(f"SMTP delivery failed: {str(exc)[:500]}") from exc

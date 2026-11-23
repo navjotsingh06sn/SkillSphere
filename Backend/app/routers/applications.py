@@ -428,6 +428,17 @@ async def apply_to_job(
 
         db.add(notification)
 
+        recruiter_notification = Notification(
+            user_id=job.recruiter_id,
+            type="new_application",
+            message=f"{user.get('full_name') or 'A candidate'} applied for {job.title}.",
+            related_id=application.id,
+            job_id=job_uuid,
+            is_read=False,
+            created_at=now,
+        )
+        db.add(recruiter_notification)
+
         await db.commit()
         await db.refresh(application)
 
@@ -702,12 +713,6 @@ async def update_application_status(
     app_uuid = parse_uuid(application_id, "application id")
     recruiter_uuid = parse_uuid(user["id"], "recruiter id")
 
-    if data.status == "rejected" and not data.rejection_reason:
-        raise HTTPException(
-            status_code=422,
-            detail="A rejection reason is required.",
-        )
-
     app_res = await db.execute(
         select(Application).where(
             Application.id == app_uuid,
@@ -722,6 +727,9 @@ async def update_application_status(
             status_code=404,
             detail="Application was not found.",
         )
+
+    if application.status == "rejected":
+        raise HTTPException(status_code=409, detail="Rejected applications cannot be changed.")
 
     eligible = application.screening_status in (
         "shortlisted",
@@ -781,7 +789,7 @@ async def update_application_status(
             f"{data.status.replace('_', ' ')}."
         )
 
-        if data.status == "rejected":
+        if data.status == "rejected" and data.rejection_reason:
             message += f" Reason: {data.rejection_reason}"
 
         notification = Notification(

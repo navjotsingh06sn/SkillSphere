@@ -50,3 +50,20 @@ export async function api(path, options = {}) {
 export function json(body) {
   return JSON.stringify(body);
 }
+
+export async function apiBlob(path) {
+  const headers = new Headers();
+  const token = localStorage.getItem("skillsphere-token");
+  if (token) headers.set("Authorization", "Bearer " + token);
+  let response;
+  try { response = await fetch(API_URL + path, { headers }); }
+  catch (error) {
+    if (error instanceof TypeError) throw new Error(`Cannot connect to the SkillSphere server at ${API_URL}. Check that the backend is running and try again.`);
+    throw error;
+  }
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(formatErrorDetail(data.detail));
+  }
+  return response.blob();
+}

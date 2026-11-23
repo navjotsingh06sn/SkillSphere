@@ -28,7 +28,7 @@ Interview invitations and shortlist notifications use SMTP. If SMTP is unavailab
 
 ## Round 1 camera monitoring and recording
 
-Candidates grant camera permission and explicit recording consent before starting or resuming a Round 1 attempt. Face-presence and multiple-face checks still run locally in the browser using MediaPipe. A video-only recording (no audio or screenshots) starts with the attempt and stops on submit or timeout. The browser keeps a local retry copy when browser storage permits, until Cloudinary confirms the upload; successful uploads are stored as authenticated Cloudinary assets. Only the recruiter responsible for the candidate’s application can request a five-minute playback URL. Recruiters can delete uploaded recordings from the assessment review page. Recordings remain until explicitly deleted; automatic expiration is not configured.
+Candidates grant camera and screen-share permission and explicit consent before starting or resuming a Round 1 attempt. Face-presence and multiple-face checks still run locally in the browser using MediaPipe. Camera video recording starts with the attempt and stops on submit or timeout. The assessment never submits because of warnings; it continues until the candidate submits or the server-enforced deadline expires. Tab/window focus losses and proctoring warnings are timestamped. The browser keeps a local retry copy when browser storage permits, until Cloudinary confirms the upload; successful uploads are stored as authenticated Cloudinary assets. Only the recruiter responsible for the candidate’s application can request a five-minute playback URL. Recruiters can delete uploaded recordings from the assessment review page. Recordings remain until explicitly deleted; automatic expiration is not configured.
 
 Cloudinary credentials are optional at startup. If they are missing or invalid, the API remains available, uploads show a failure state, and the candidate can retry after configuration. Add the three Cloudinary values to Backend/.env and install the backend requirements to enable uploads. The API key and signature are used only for the direct signed upload; the API secret never leaves the backend. Existing SMTP email delivery is unchanged. No Video Assessment or LiveKit recording pipeline is part of this Round 1 integration.
 
@@ -44,9 +44,9 @@ The existing saved-resume upload and reprocessing routes remain unchanged and co
 
 The quick OCR route uses PaddleOCR 3.x on CPU. It extracts selectable PDF text directly and uses the lightweight PP-OCRv5 mobile models for scanned PDF pages and PNG/JPG/JPEG images. Model weights are loaded the first time OCR is needed and cached for later requests. The route processes one document at a time and accepts files up to the configured upload limit.
 
-From this folder, activate the PaddleOCR environment and install the backend requirements:
+Use the same `.venv` environment for the API and OCR. It includes both PaddleOCR and the Cloudinary SDK required for private assessment video uploads:
 
-    .\paddle_env\Scripts\Activate.ps1
+    .\.venv\Scripts\Activate.ps1
     python -m pip install -r requirements.txt
 
 Start FastAPI in that activated environment:
@@ -64,3 +64,8 @@ With the API running, execute:
     python -m unittest discover -s tests -v
 
 See tests/TEST_RESULTS.md for the latest test results and any database limitations.
+
+
+### Proctoring evidence
+
+During an active attempt, the candidate camera and shared assessment screen are captured every 30 seconds and when a suspicious action is recorded. Audio is not captured in the video. Evidence images are stored on the backend server in the private folder configured by `PROCTORING_EVIDENCE_DIR` (default: `Backend/private_proctoring_evidence`) and are served only through recruiter-authenticated, assessment-owner-checked API routes. Configure this path on a persistent private volume in production; the default container filesystem may not persist across redeployments. The additive migration `4e5f6a7b8c9d_add_proctoring_evidence.py` must be applied with `alembic upgrade head`. Recruiter review shows warning totals, timestamps, descriptions, and images; names with five or more warnings are highlighted.

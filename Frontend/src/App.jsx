@@ -1,13 +1,30 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { ArrowDownRight, ArrowRight, Bell, BriefcaseBusiness, Building2, CalendarDays, Check, ChevronDown, CircleUserRound, Eye, EyeOff, FileText, LayoutDashboard, LockKeyhole, LogOut, Menu, Moon, Palette, Search, ShieldCheck, Sparkles, Sun, Trash2, Users, Volume2, VolumeX, X, UploadCloud } from "lucide-react";
 import { Link, NavLink, Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { api, json } from "./api.js";
+import { api, apiBlob, json } from "./api.js";
 import RecruiterAssessments from "./RecruiterAssessments.jsx";
 import ProctoringMonitor from "./ProctoringMonitor.jsx";
 import { clearRound1Draft, loadRound1Draft, saveRound1Final } from "./round1RecordingStorage.js";
 import { uploadRound1Recording } from "./round1CloudinaryUpload.js";
 import AdminProctoring from "./AdminProctoring.jsx";
 import CandidateChatbot from "./CandidateChatbot.jsx";
+
+function ProtectedEvidenceImage({ path, alt }) {
+  const [src, setSrc] = useState("");
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let objectUrl;
+    let cancelled = false;
+    setFailed(false);
+    apiBlob(path).then(blob => {
+      if (cancelled) return;
+      objectUrl = URL.createObjectURL(blob);
+      setSrc(objectUrl);
+    }).catch(() => { if (!cancelled) setFailed(true); });
+    return () => { cancelled = true; if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [path]);
+  return src ? <img src={src} alt={alt} loading="lazy" /> : <div className="proctoring-evidence-placeholder">{failed ? "Private evidence could not be loaded." : "Loading private evidence…"}</div>;
+}
 
 const AuthContext = createContext(null);
 let audioContext;
@@ -115,7 +132,12 @@ function DashboardLayout() {
   const { user, logout } = useAuth(); const [mobileOpen, setMobileOpen] = useState(false);
   const [badgeCounts, setBadgeCounts] = useState({ notifications: 0, jobs: 0 });
   const [newJobsNotice, setNewJobsNotice] = useState(0);
+  const [newApplicationNotice, setNewApplicationNotice] = useState(null);
   const announcedJobs = useRef(0);
+  const seenApplicationNotifications = useRef(new Set());
+  const applicationNotificationsInitialized = useRef(false);
+  const dashboardMountedAt = useRef(Date.now());
+  const navigate = useNavigate();
   const links = navByRole[user?.role] || [];
   const location = useLocation();
   const isCandidateJobsPage = user?.role === "candidate" && location.pathname.startsWith("/candidate/jobs");
@@ -140,13 +162,36 @@ function DashboardLayout() {
             jobsRequest = api(`/jobs/new-count${query}`);
           }
         }
-        const [notifications, jobs] = await Promise.all([
+        const applicationNotificationsRequest = user?.role === "recruiter"
+          ? api("/notifications?unread_only=true&limit=50")
+          : Promise.resolve({ notifications: [] });
+        const [notifications, jobs, applicationNotifications] = await Promise.all([
           api("/notifications/unread-count"),
           jobsRequest,
+          applicationNotificationsRequest,
         ]);
         if (!active) return;
         const count = isCandidateJobsPage ? 0 : jobs.count || 0;
-        setBadgeCounts({ notifications: notifications.unread_count || 0, jobs: count });
+        const notificationBadge = user?.role === "recruiter"
+          ? notifications.unread_applications || 0
+          : notifications.unread_count || 0;
+        setBadgeCounts({ notifications: notificationBadge, jobs: count });
+        if (user?.role === "recruiter") {
+          const newApplications = (applicationNotifications.notifications || [])
+            .filter(item => item.type === "new_application");
+          if (!applicationNotificationsInitialized.current) {
+            applicationNotificationsInitialized.current = true;
+            const freshOnOpen = newApplications.filter(item =>
+              new Date(item.created_at).getTime() >= dashboardMountedAt.current - 1000
+            );
+            newApplications.forEach(item => seenApplicationNotifications.current.add(item.id));
+            if (freshOnOpen.length) setNewApplicationNotice(freshOnOpen[0]);
+          } else {
+            const fresh = newApplications.filter(item => !seenApplicationNotifications.current.has(item.id));
+            fresh.forEach(item => seenApplicationNotifications.current.add(item.id));
+            if (fresh.length) setNewApplicationNotice(fresh[0]);
+          }
+        }
         if (user?.role === "candidate" && !isCandidateJobsPage) {
           if (count > announcedJobs.current) {
             announcedJobs.current = count;
@@ -159,11 +204,20 @@ function DashboardLayout() {
       } catch { /* Keep the workspace usable when badge counts are temporarily unavailable. */ }
     };
     refresh();
-    const timer = window.setInterval(refresh, 30000);
+    const timer = window.setInterval(refresh, user?.role === "recruiter" ? 5000 : 30000);
     window.addEventListener("focus", refresh);
     window.addEventListener("skillsphere:badges-refresh", refresh);
     return () => { active = false; window.clearInterval(timer); window.removeEventListener("focus", refresh); window.removeEventListener("skillsphere:badges-refresh", refresh); };
   }, [user?.role, user?.id, location.pathname, isCandidateJobsPage, jobsSeenKey]);
+  async function openNewApplication(event) {
+    event.preventDefault();
+    const notification = newApplicationNotice;
+    if (!notification) return;
+    try { await api(`/notifications/${notification.id}/read`, { method: "PATCH" }); } catch { /* The application page remains available if read marking fails. */ }
+    window.dispatchEvent(new Event("skillsphere:badges-refresh"));
+    setNewApplicationNotice(null);
+    navigate(notification.related_url || "/recruiter/applicants");
+  }
   return <div className="dashboard-shell">
     {mobileOpen && <button className="drawer-scrim" onClick={() => setMobileOpen(false)} aria-label="Close menu" />}
     <aside className={"sidebar " + (mobileOpen ? "sidebar-open" : "")}>
@@ -171,6 +225,10 @@ function DashboardLayout() {
       <div className="sidebar-label">WORKSPACE</div><nav className="side-links">{links.map(([label, to, Icon]) => { const badge = to.endsWith("/notifications") ? badgeCounts.notifications : to === "/candidate/jobs" && !isCandidateJobsPage ? badgeCounts.jobs : 0; return <NavLink key={to} to={to} end={to === "/candidate" || to === "/recruiter" || to === "/admin"} onClick={() => setMobileOpen(false)} className={({ isActive }) => "side-link" + (isActive ? " side-link-active" : "")}><Icon size={17} /><span>{label}</span>{badge > 0 && <span className="nav-count-badge" aria-label={`${badge} ${label.toLowerCase()}`}>{badge > 99 ? "99+" : badge}</span>}</NavLink>; })}</nav>
       <div className="sidebar-bottom"><div className="sidebar-help"><div className="help-orb"><Sparkles size={16} /></div><b>Make your next move</b><span>Keep your profile fresh to find better matches.</span><Link to={user?.role === "candidate" ? "/candidate/profile" : "/candidate/jobs"}>Explore more <ArrowRight size={14} /></Link></div><button className="side-link side-logout" onClick={logout}><LogOut size={17} />Log out</button></div>
     </aside>
+    {user?.role === "recruiter" && newApplicationNotice && <div className="candidate-new-jobs-popover recruiter-application-popover" role="status" aria-live="polite">
+      <a href={newApplicationNotice.related_url || "/recruiter/applicants"} onClick={openNewApplication}><span className="candidate-new-jobs-icon"><Users size={17} /></span><span><b>New job application</b><small>{newApplicationNotice.candidate_name} applied for {newApplicationNotice.job_title} · {new Date(newApplicationNotice.application_time || newApplicationNotice.created_at).toLocaleString()}</small></span></a>
+      <button type="button" aria-label="Dismiss application notification" onClick={() => setNewApplicationNotice(null)}><X size={15} /></button>
+    </div>}
     {newJobsNotice > 0 && !isCandidateJobsPage && <div className="candidate-new-jobs-popover" role="status">
       <Link to="/candidate/jobs" onClick={() => setNewJobsNotice(0)}><span className="candidate-new-jobs-icon"><BriefcaseBusiness size={17} /></span><span><b>New jobs are available</b><small>{newJobsNotice} recently posted {newJobsNotice === 1 ? "job" : "jobs"}. Open Explore jobs to browse.</small></span></Link>
       <button type="button" aria-label="Dismiss new jobs notice" onClick={() => setNewJobsNotice(0)}><X size={15} /></button>
@@ -230,7 +288,7 @@ function CandidateHome() {
   }, []);
   if (!data && !error) return <Loading />;
   return <><PageHeader eyebrow="YOUR CAREER SPACE" title="Good to see you." description="A clear view of what’s moving and where to go next." action={<Link className="button button-primary" to="/candidate/jobs">Explore jobs <ArrowRight size={16} /></Link>} /><Notice>{error}</Notice>
-    {data && <><div className="stat-grid"><Stat label="Applications" value={data.total_applications} icon={BriefcaseBusiness} /><Stat label="In progress" value={data.pending_applications} icon={ArrowDownRight} /><Stat label="Shortlisted" value={data.shortlisted} icon={Check} /><Stat label="Interviews" value={data.interviews} icon={Users} /></div>{interviews.some(item => item.status === "scheduled") && <section className="panel"><div className="panel-heading"><div><span className="eyebrow">UPCOMING</span><h3>Scheduled interviews</h3></div><Link to="/candidate/interviews">View interviews <ArrowRight size={14} /></Link></div><div className="activity-list">{interviews.filter(item => item.status === "scheduled").slice(0, 3).map(item => <div className="activity-row" key={item.id}><span className="company-tile small-tile"><CalendarDays size={16} /></span><div><b>{item.job?.title || "Interview"}</b><small>{new Date(item.scheduled_at).toLocaleString()} · {item.duration_minutes} minutes</small></div><span className="status status-shortlisted">{item.candidate_response}</span></div>)}</div></section>}<div className="content-grid"><section className="panel"><div className="panel-heading"><div><span className="eyebrow">YOUR ACTIVITY</span><h3>Recent applications</h3></div><Link to="/candidate/applications">See all <ArrowRight size={14} /></Link></div>{data.recent_applications.length ? <div className="activity-list">{data.recent_applications.map(item => <div className="activity-row" key={item.id}><span className="company-tile small-tile"><BriefcaseBusiness size={16} /></span><div><b>Application update</b><small>{item.status.replaceAll("_", " ")} · {new Date(item.applied_at).toLocaleDateString()}</small></div><span className={"status status-" + item.status}>{item.status.replaceAll("_", " ")}</span></div>)}</div> : <Empty title="Your next move starts here" text="Find a role that fits your skills and send your first application." action={<Link className="button button-outline" to="/candidate/jobs">Browse roles</Link>} />}</section><section className="panel completion-panel"><span className="eyebrow">PROFILE STRENGTH</span><div className="completion-ring" style={{ "--progress": data.profile_completion + "%" }}><div><b>{data.profile_completion}%</b><small>complete</small></div></div><h3>Give your profile a little polish.</h3><p>A complete profile helps recruiters understand your experience.</p><Link to="/candidate/profile">Update profile <ArrowRight size={15} /></Link></section></div><section className="panel"><div className="panel-heading"><div><span className="eyebrow">BASED ON YOUR PROFILE</span><h3>Recommended roles</h3></div><Link to="/candidate/jobs">Browse all <ArrowRight size={14} /></Link></div>{data.recommended_jobs.length ? <div className="recommended-list">{data.recommended_jobs.map(job => <Link className="recommended-job" key={job.id} to={"/jobs/" + job.id}><span className="company-tile small-tile">{(job.company_name || "S").slice(0, 1)}</span><span><b>{job.title}</b><small>{job.company_name} · {job.location}</small></span>{job.match_percentage === null ? <span className="status">No skill score</span> : <span className="status status-shortlisted">{job.match_percentage}% match</span>}</Link>)}</div> : <Empty title="No roles to recommend yet" text="Published roles will appear here when they match your profile." />}</section></>}</>;
+    {data && <><div className="stat-grid"><Stat label="Applications" value={data.total_applications} icon={BriefcaseBusiness} /><Stat label="In progress" value={data.pending_applications} icon={ArrowDownRight} /><Stat label="Shortlisted" value={data.shortlisted} icon={Check} /><Stat label="Interviews" value={data.interviews} icon={Users} /></div>{interviews.some(item => item.status === "scheduled") && <section className="panel"><div className="panel-heading"><div><span className="eyebrow">UPCOMING</span><h3>Scheduled interviews</h3></div><Link to="/candidate/interviews">View interviews <ArrowRight size={14} /></Link></div><div className="activity-list">{interviews.filter(item => item.status === "scheduled").slice(0, 3).map(item => <div className="activity-row" key={item.id}><span className="company-tile small-tile"><CalendarDays size={16} /></span><div><b>{item.job?.title || "Interview"}</b><small>{new Date(item.scheduled_at).toLocaleString()} · {item.duration_minutes} minutes</small></div><span className="status status-shortlisted">{item.candidate_response}</span></div>)}</div></section>}<div className="content-grid"><section className="panel"><div className="panel-heading"><div><span className="eyebrow">YOUR ACTIVITY</span><h3>Recent applications</h3></div><Link to="/candidate/applications">See all <ArrowRight size={14} /></Link></div>{data.recent_applications.length ? <div className="activity-list">{data.recent_applications.map(item => <div className="activity-row" key={item.id}><span className="company-tile small-tile"><BriefcaseBusiness size={16} /></span><div><b>Application update</b><small>{item.job_title || "Job application"} · {item.status.replaceAll("_", " ")} · {new Date(item.applied_at).toLocaleDateString()}</small>{(item.experience_requirement || item.expected_salary) && <small>{[item.experience_requirement, item.expected_salary].filter(Boolean).join(" · ")}</small>}</div><span className={"status status-" + item.status}>{item.status.replaceAll("_", " ")}</span></div>)}</div> : <Empty title="Your next move starts here" text="Find a role that fits your skills and send your first application." action={<Link className="button button-outline" to="/candidate/jobs">Browse roles</Link>} />}</section><section className="panel completion-panel"><span className="eyebrow">PROFILE STRENGTH</span><div className="completion-ring" style={{ "--progress": data.profile_completion + "%" }}><div><b>{data.profile_completion}%</b><small>complete</small></div></div><h3>Give your profile a little polish.</h3><p>A complete profile helps recruiters understand your experience.</p><Link to="/candidate/profile">Update profile <ArrowRight size={15} /></Link></section></div><section className="panel"><div className="panel-heading"><div><span className="eyebrow">BASED ON YOUR PROFILE</span><h3>Recommended roles</h3></div><Link to="/candidate/jobs">Browse all <ArrowRight size={14} /></Link></div>{data.recommended_jobs.length ? <div className="recommended-list">{data.recommended_jobs.map(job => <Link className="recommended-job" key={job.id} to={"/jobs/" + job.id}><span className="company-tile small-tile">{(job.company_name || "S").slice(0, 1)}</span><span><b>{job.title}</b><small>{[job.company_name, job.location, job.experience_requirement, job.expected_salary].filter(Boolean).join(" · ")}</small></span>{job.match_percentage === null ? <span className="status">No skill score</span> : <span className="status status-shortlisted">{job.match_percentage}% match</span>}</Link>)}</div> : <Empty title="No roles to recommend yet" text="Published roles will appear here when they match your profile." />}</section></>}</>;
 }
 function RecruiterHome() {
   const [data, setData] = useState(null); const [error, setError] = useState("");
@@ -357,7 +415,7 @@ function ProfilePage() {
 function JobsPage() {
   const { user } = useAuth(); const navigate = useNavigate(); const [items, setItems] = useState([]);
   const [applications, setApplications] = useState([]);
-  const [filters, setFilters] = useState(() => ({ keyword: new URLSearchParams(window.location.search).get("q") || "", location: "", job_type: "", min_salary: "", max_experience: "", sort: "newest" })); const [busy, setBusy] = useState(true); const [error, setError] = useState(""); const [loadError, setLoadError] = useState(""); const [message, setMessage] = useState("");
+  const [filters, setFilters] = useState(() => ({ keyword: new URLSearchParams(window.location.search).get("q") || "", location: "", job_type: "", expected_salary: "", experience_requirement: "", sort: "newest" })); const [busy, setBusy] = useState(true); const [error, setError] = useState(""); const [loadError, setLoadError] = useState(""); const [message, setMessage] = useState("");
   async function load(next = filters) { setBusy(true); setError(""); setLoadError(""); try { const query = new URLSearchParams(Object.entries(next).filter(([, v]) => v)); const [data, candidateApplications] = await Promise.all([api("/jobs?" + query.toString()), user?.role === "candidate" ? api("/applications") : Promise.resolve([])]); setItems(data.notifications || data.items || []); setApplications(candidateApplications); } catch (e) { setLoadError(e.message); } finally { setBusy(false); } }
   useEffect(() => { load(); }, []);
   async function action(job, name) {
@@ -371,18 +429,18 @@ function JobsPage() {
       <label><Search size={16} /><input value={filters.keyword} onChange={e => setFilters({ ...filters, keyword: e.target.value })} placeholder="Role, company, or skill" /></label>
       <label><Building2 size={16} /><input value={filters.location} onChange={e => setFilters({ ...filters, location: e.target.value })} placeholder="Location" /></label>
       <label><select aria-label="Job type" value={filters.job_type} onChange={e => setFilters({ ...filters, job_type: e.target.value })}><option value="">Any job type</option><option>Full-time</option><option>Part-time</option><option>Contract</option><option>Internship</option><option>Remote</option></select></label>
-      <label><input aria-label="Minimum salary" type="number" min="0" value={filters.min_salary} onChange={e => setFilters({ ...filters, min_salary: e.target.value })} placeholder="Minimum salary" /></label>
-      <label><input aria-label="Maximum experience" type="number" min="0" max="60" value={filters.max_experience} onChange={e => setFilters({ ...filters, max_experience: e.target.value })} placeholder="Max. experience" /></label>
-      <label><select aria-label="Sort jobs" value={filters.sort} onChange={e => setFilters({ ...filters, sort: e.target.value })}><option value="newest">Newest</option><option value="oldest">Oldest</option><option value="salary_high">Salary: high to low</option><option value="salary_low">Salary: low to high</option></select></label>
+      <label><input aria-label="Expected salary" value={filters.expected_salary} onChange={e => setFilters({ ...filters, expected_salary: e.target.value })} placeholder="Expected salary" /></label>
+      <label><input aria-label="Experience in years" value={filters.experience_requirement} onChange={e => setFilters({ ...filters, experience_requirement: e.target.value })} placeholder="Experience in years" /></label>
+      <label><select aria-label="Sort jobs" value={filters.sort} onChange={e => setFilters({ ...filters, sort: e.target.value })}><option value="newest">Newest</option><option value="oldest">Oldest</option></select></label>
       <button className="button button-primary">Search jobs</button>
     </form><Notice>{error}</Notice><Notice type="success" autoHideMs={3200}>{message}</Notice>
-    {busy ? <Loading /> : loadError ? <section className="jobs-load-error panel"><Empty title="We couldn’t load the opportunities" text={loadError.toLowerCase().includes("failed to fetch") ? "SkillSphere could not reach its API. Check that the backend is running, then try again." : loadError} action={<button className="button button-primary" onClick={() => load()}>Try again <ArrowRight size={15} /></button>} /></section> : items.length ? <div className="job-grid">{items.map(job => { const application = applications.find(item => item.job_id === job.id); const badge = application ? ({ under_review: "Applied", applied: "Applied", shortlisted: "Applied", interview: "Interview", selected: "Selected", rejected: "Rejected" })[application.status] : null; return <article className="job-card" key={job.id}><div className="job-card-top"><div className="company-tile">{(job.company_name || "S").slice(0, 1)}</div><div className="job-card-meta">{job.is_demo && <span className="status demo-job-badge">Demo listing</span>}{badge && <Link className={"status status-" + application.status} to={"/candidate/applications/" + application.id} aria-label={`${badge} application for ${job.title}`}>{badge}</Link>}<span className="job-date">{new Date(job.created_at).toLocaleDateString()}</span></div></div><h3>{job.title}</h3><div className="job-company">{job.company_name} <span>·</span> {job.location}</div><div className="job-tags"><span>{job.job_type}</span><span>{job.experience_min || 0}–{job.experience_max || "Any"} yrs</span>{job.salary_min && <span>{job.salary_min}–{job.salary_max || "—"}</span>}</div><p>{(job.description || "").slice(0, 150)}{job.description?.length > 150 ? "…" : ""}</p><div className="skill-list">{(job.required_skills || []).slice(0, 4).map(s => <span className="skill-tag" key={s}>{s}</span>)}</div><div className="job-actions"><Link to={"/jobs/" + job.id} className="button button-outline">Details</Link>{user?.role === "candidate" && !job.is_demo && <><button className="button button-quiet" onClick={() => action(job, "save")}>Save</button>{!application && <button className="button button-primary" onClick={() => action(job, "apply")}>Apply</button>}<button className="icon-button" title="Analyze your match" onClick={() => action(job, "analyze")}><Sparkles size={17} /></button></>}</div></article>;})}</div> : <Empty title="No roles found yet" text="Try adjusting your search, or check back soon." />}</>;
+    {busy ? <Loading /> : loadError ? <section className="jobs-load-error panel"><Empty title="We couldn’t load the opportunities" text={loadError.toLowerCase().includes("failed to fetch") ? "SkillSphere could not reach its API. Check that the backend is running, then try again." : loadError} action={<button className="button button-primary" onClick={() => load()}>Try again <ArrowRight size={15} /></button>} /></section> : items.length ? <div className="job-grid">{items.map(job => { const application = applications.find(item => item.job_id === job.id); const badge = application ? ({ under_review: "Applied", applied: "Applied", shortlisted: "Applied", interview: "Interview", selected: "Selected", rejected: "Rejected" })[application.status] : null; return <article className="job-card" key={job.id}><div className="job-card-top"><div className="company-tile">{(job.company_name || "S").slice(0, 1)}</div><div className="job-card-meta">{job.is_demo && <span className="status demo-job-badge">Demo listing</span>}{badge && <Link className={"status status-" + application.status} to={"/candidate/applications/" + application.id} aria-label={`${badge} application for ${job.title}`}>{badge}</Link>}<span className="job-date">{new Date(job.created_at).toLocaleDateString()}</span></div></div><h3>{job.title}</h3><div className="job-company">{job.company_name} <span>·</span> {job.location}</div><div className="job-tags"><span>{job.job_type}</span>{job.experience_requirement && <span>Experience: {job.experience_requirement}</span>}{job.expected_salary && <span>Salary: {job.expected_salary}</span>}</div><p>{(job.description || "").slice(0, 150)}{job.description?.length > 150 ? "…" : ""}</p><div className="skill-list">{(job.required_skills || []).slice(0, 4).map(s => <span className="skill-tag" key={s}>{s}</span>)}</div><div className="job-actions"><Link to={"/jobs/" + job.id} className="button button-outline">Details</Link>{user?.role === "candidate" && !job.is_demo && <><button className="button button-quiet" onClick={() => action(job, "save")}>Save</button>{!application && <button className="button button-primary" onClick={() => action(job, "apply")}>Apply</button>}<button className="icon-button" title="Analyze your match" onClick={() => action(job, "analyze")}><Sparkles size={17} /></button></>}</div></article>;})}</div> : <Empty title="No roles found yet" text="Try adjusting your search, or check back soon." />}</>;
 }
 function JobDetailPage() {
   const { jobId } = useParams(); const { user } = useAuth(); const [job, setJob] = useState(null); const [error, setError] = useState("");
   useEffect(() => { api("/jobs/" + jobId).then(setJob).catch(e => setError(e.message)); }, [jobId]);
   if (!job) return <><PageHeader eyebrow="JOB DETAILS" title="Role details" /><Notice>{error}</Notice>{!error && <Loading />}</>;
-  return <><PageHeader eyebrow={job.is_demo ? "DEMO LISTING · " + job.company_name : job.company_name} title={job.title} description={job.location + " · " + job.job_type} /><section className="panel job-detail">{job.is_demo && <div className="demo-job-notice">Sample listing for browsing only. This is not a live vacancy.</div>}<div className="detail-tags">{(job.required_skills || []).map(skill => <span className="skill-tag" key={skill}>{skill}</span>)}</div><h3>About the role</h3><p>{job.description}</p><h3>Responsibilities</h3><ul>{(job.responsibilities || []).map(item => <li key={item}>{item}</li>)}</ul><h3>Requirements</h3><ul>{(job.requirements || []).map(item => <li key={item}>{item}</li>)}</ul>{user?.role === "candidate" && !job.is_demo && <div className="job-actions"><button className="button button-primary" onClick={() => api("/jobs/" + job.id + "/apply", { method: "POST" }).then(() => setError("Application submitted.")).catch(e => setError(e.message))}>Apply now</button><Link className="button button-outline" to="/candidate/analysis" onClick={() => sessionStorage.setItem("skillsphere-job", job.id)}>Analyze match</Link></div>}<Notice>{error}</Notice></section></>;
+  return <><PageHeader eyebrow={job.is_demo ? "DEMO LISTING · " + job.company_name : job.company_name} title={job.title} description={job.location + " · " + job.job_type} /><section className="panel job-detail">{job.is_demo && <div className="demo-job-notice">Sample listing for browsing only. This is not a live vacancy.</div>}<div className="detail-tags">{job.experience_requirement && <span className="skill-tag">Experience in years: {job.experience_requirement}</span>}{job.expected_salary && <span className="skill-tag">Expected salary: {job.expected_salary}</span>}{(job.required_skills || []).map(skill => <span className="skill-tag" key={skill}>{skill}</span>)}</div><h3>About the role</h3><p>{job.description}</p><h3>Responsibilities</h3><ul>{(job.responsibilities || []).map(item => <li key={item}>{item}</li>)}</ul><h3>Requirements</h3><ul>{(job.requirements || []).map(item => <li key={item}>{item}</li>)}</ul>{user?.role === "candidate" && !job.is_demo && <div className="job-actions"><button className="button button-primary" onClick={() => api("/jobs/" + job.id + "/apply", { method: "POST" }).then(() => setError("Application submitted.")).catch(e => setError(e.message))}>Apply now</button><Link className="button button-outline" to="/candidate/analysis" onClick={() => sessionStorage.setItem("skillsphere-job", job.id)}>Analyze match</Link></div>}<Notice>{error}</Notice></section></>;
 }
 function ResumePage() {
   const [items, setItems] = useState([]); const [selected, setSelected] = useState(null); const [file, setFile] = useState(null); const [error, setError] = useState(""); const [message, setMessage] = useState("");
@@ -442,7 +500,7 @@ function ApplicationsPage() {
   async function load() { try { setItems(await api("/applications")); } catch (e) { setError(e.message); } }
   useEffect(() => { load(); }, []);
   async function withdraw(id) { try { await api("/applications/" + id + "/withdraw", { method: "PUT" }); await load(); } catch (e) { setError(e.message); } }
-  return <><PageHeader eyebrow="APPLICATION TRACKER" title="Keep every next step in view." description="Track status updates across roles you’ve applied to." /><Notice>{error}</Notice><section className="panel">{items.length ? <div className="table-wrap"><table><thead><tr><th>Role</th><th>Applied</th><th>Match</th><th>Status</th><th>Update</th></tr></thead><tbody>{items.map(item => <tr key={item.id}><td><Link to={"/candidate/applications/" + item.id}><b>{item.job?.title || "Role"}</b></Link><small>{item.job?.company_name || "Company"}</small></td><td>{new Date(item.applied_at).toLocaleDateString()}</td><td>{item.match_score === null ? "Manual review" : `${item.match_score}%`}</td><td><span className={"status status-" + item.status}>{item.status.replaceAll("_", " ")}</span></td><td>{["applied", "under_review", "shortlisted", "interview"].includes(item.status) && <button className="text-button" onClick={() => withdraw(item.id)}>Withdraw</button>}</td></tr>)}</tbody></table></div> : <Empty title="No applications yet" text="Your applications will appear here once you apply to a role." action={<Link to="/candidate/jobs" className="button button-primary">Explore jobs</Link>} />}</section></>;
+  return <><PageHeader eyebrow="APPLICATION TRACKER" title="Keep every next step in view." description="Track status updates across roles you’ve applied to." /><Notice>{error}</Notice><section className="panel">{items.length ? <div className="table-wrap"><table><thead><tr><th>Role</th><th>Applied</th><th>Match</th><th>Status</th><th>Update</th></tr></thead><tbody>{items.map(item => <tr key={item.id}><td><Link to={"/candidate/applications/" + item.id}><b>{item.job?.title || "Role"}</b></Link><small>{item.job?.company_name || "Company"}</small><small>{[item.job?.experience_requirement, item.job?.expected_salary].filter(Boolean).join(" · ")}</small></td><td>{new Date(item.applied_at).toLocaleDateString()}</td><td>{item.match_score === null ? "Manual review" : `${item.match_score}%`}</td><td><span className={"status status-" + item.status}>{item.status.replaceAll("_", " ")}</span></td><td>{["applied", "under_review", "shortlisted", "interview"].includes(item.status) && <button className="text-button" onClick={() => withdraw(item.id)}>Withdraw</button>}</td></tr>)}</tbody></table></div> : <Empty title="No applications yet" text="Your applications will appear here once you apply to a role." action={<Link to="/candidate/jobs" className="button button-primary">Explore jobs</Link>} />}</section></>;
 }
 function CandidateApplicationDetailPage() {
   const { applicationId } = useParams();
@@ -462,6 +520,7 @@ function CandidateApplicationDetailPage() {
     <PageHeader eyebrow="APPLICATION DETAILS" title={application.job?.title || "Your application"} description={`Submitted ${new Date(application.applied_at).toLocaleString()}`} action={<Link className="button button-outline" to="/candidate/applications">Back to applications</Link>} />
     <section className="panel"><div className="panel-heading"><div><span className="eyebrow">{application.job?.company_name || "SKILLSPHERE"}</span><h3>{application.job?.title || "Job application"}</h3></div><span className={"status status-" + application.status}>{application.status.replaceAll("_", " ")}</span></div>
       <p>Application date: {new Date(application.applied_at).toLocaleString()}</p>
+      {(application.job?.experience_requirement || application.job?.expected_salary) && <div className="applicant-detail-grid"><div><b>Experience in years</b><p>{application.job?.experience_requirement || "Not specified"}</p></div><div><b>Expected salary</b><p>{application.job?.expected_salary || "Not specified"}</p></div></div>}
       {rejected && <section className="screening-result">
         <span className="eyebrow">AI SCREENING RESULT</span>
         <h3>Your resume did not meet the screening criteria</h3>
@@ -569,21 +628,21 @@ function CompanyPage() {
 }
 function RecruiterJobsPage() {
   const [items, setItems] = useState([]); const [showForm, setShowForm] = useState(false); const [editId, setEditId] = useState(null); const [error, setError] = useState(""); const [message, setMessage] = useState("");
-  const [form, setForm] = useState({ title: "", description: "", location: "", job_type: "Full-time", required_skills: "", experience_min: "0", experience_max: "0", salary_min: "", salary_max: "", responsibilities_text: "", requirements_text: "", application_deadline: "", status: "published" });
+  const [form, setForm] = useState({ title: "", description: "", location: "", job_type: "Full-time", required_skills: "", experience_requirement: "", expected_salary: "", responsibilities_text: "", requirements_text: "", application_deadline: "", status: "published" });
   async function load() { try { setItems(await api("/recruiter/jobs")); } catch (e) { setError(e.message); } }
   useEffect(() => { load(); }, []);
   async function createJob(e) {
     e.preventDefault(); setError(""); setMessage("");
-    try { const body = { ...form, required_skills: form.required_skills.split(",").map(s => s.trim()).filter(Boolean), responsibilities: form.responsibilities_text.split("\\n").map(s => s.trim()).filter(Boolean), requirements: form.requirements_text.split("\\n").map(s => s.trim()).filter(Boolean), experience_min: Number(form.experience_min), experience_max: Number(form.experience_max), salary_min: form.salary_min ? Number(form.salary_min) : null, salary_max: form.salary_max ? Number(form.salary_max) : null, application_deadline: form.application_deadline ? new Date(form.application_deadline).toISOString() : null }; delete body.responsibilities_text; delete body.requirements_text;
+    try { const body = { ...form, required_skills: form.required_skills.split(",").map(s => s.trim()).filter(Boolean), responsibilities: form.responsibilities_text.split("\\n").map(s => s.trim()).filter(Boolean), requirements: form.requirements_text.split("\\n").map(s => s.trim()).filter(Boolean), application_deadline: form.application_deadline ? new Date(form.application_deadline).toISOString() : null }; delete body.responsibilities_text; delete body.requirements_text;
       if (editId) { await api("/jobs/" + editId, { method: "PUT", body: json(body) }); setMessage("Role updated."); } else { await api("/jobs", { method: "POST", body: json(body) }); setMessage("Role posted."); } setEditId(null); setShowForm(false); load();
     } catch (err) { setError(err.message); }
   }
-  function editJob(job) { setEditId(job.id); setForm({ ...form, ...job, required_skills: (job.required_skills || []).join(", "), responsibilities_text: (job.responsibilities || []).join("\\n"), requirements_text: (job.requirements || []).join("\\n"), experience_min: String(job.experience_min || 0), experience_max: String(job.experience_max || 0), salary_min: job.salary_min || "", salary_max: job.salary_max || "", application_deadline: job.application_deadline ? new Date(job.application_deadline).toISOString().slice(0, 16) : "" }); setShowForm(true); }
+  function editJob(job) { setEditId(job.id); setForm({ ...form, ...job, required_skills: (job.required_skills || []).join(", "), responsibilities_text: (job.responsibilities || []).join("\\n"), requirements_text: (job.requirements || []).join("\\n"), experience_requirement: job.experience_requirement || "", expected_salary: job.expected_salary || "", application_deadline: job.application_deadline ? new Date(job.application_deadline).toISOString().slice(0, 16) : "" }); setShowForm(true); }
   async function setStatus(job, next) { try { await api("/jobs/" + job.id, { method: "PUT", body: json({ ...job, status: next }) }); load(); } catch (e) { setError(e.message); } }
   async function remove(job) { if (!window.confirm("Delete this role?")) return; try { await api("/jobs/" + job.id, { method: "DELETE" }); load(); } catch (e) { setError(e.message); } }
   return <><PageHeader eyebrow="ROLE MANAGEMENT" title="Your open opportunities." description="Publish a role to make it visible to job seekers." action={<button className="button button-primary" onClick={() => { setEditId(null); setShowForm(!showForm); }}>Post a job <ArrowRight size={16} /></button>} /><Notice>{error}</Notice><Notice type="success" autoHideMs={3200}>{message}</Notice>
-    {showForm && <form className="panel edit-form" onSubmit={createJob}><h3>{editId ? "Edit role" : "New role"}</h3><div className="form-grid"><label>Title<input required value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} /></label><label>Location<input required value={form.location} onChange={e => setForm({ ...form, location: e.target.value })} /></label><label>Job type<select value={form.job_type} onChange={e => setForm({ ...form, job_type: e.target.value })}><option>Full-time</option><option>Part-time</option><option>Contract</option><option>Internship</option><option>Remote</option></select></label><label>Required skills<input value={form.required_skills} onChange={e => setForm({ ...form, required_skills: e.target.value })} placeholder="React, TypeScript" /></label><label>Minimum experience<input type="number" min="0" value={form.experience_min} onChange={e => setForm({ ...form, experience_min: e.target.value })} /></label><label>Maximum experience<input type="number" min="0" value={form.experience_max} onChange={e => setForm({ ...form, experience_max: e.target.value })} /></label><label>Salary minimum<input className="salary-manual-input" type="number" min="0" value={form.salary_min} onChange={e => setForm({ ...form, salary_min: e.target.value })} /></label><label>Salary maximum<input className="salary-manual-input" type="number" min="0" value={form.salary_max} onChange={e => setForm({ ...form, salary_max: e.target.value })} /></label><label>Application deadline<input type="datetime-local" value={form.application_deadline} onChange={e => setForm({ ...form, application_deadline: e.target.value })} /></label><label className="wide-field">Responsibilities <small>One item per line</small><textarea rows="3" value={form.responsibilities_text} onChange={e => setForm({ ...form, responsibilities_text: e.target.value })} /></label><label className="wide-field">Requirements <small>One item per line</small><textarea rows="3" value={form.requirements_text} onChange={e => setForm({ ...form, requirements_text: e.target.value })} /></label><label className="wide-field">Description<textarea required minLength="10" rows="5" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} /></label></div><button className="button button-primary">{editId ? "Save changes" : "Publish role"}</button></form>}
-    <section className="panel">{items.length ? <div className="table-wrap"><table><thead><tr><th>Role</th><th>Applicants</th><th>Status</th><th>Actions</th></tr></thead><tbody>{items.map(job => <tr key={job.id}><td><b>{job.title}</b><small>{job.location}</small></td><td><Link to={"/recruiter/applicants?job_id=" + job.id}>Review applicants</Link></td><td><span className={"status status-" + job.status}>{job.status}</span></td><td className="table-actions"><button className="text-button" onClick={() => editJob(job)}>Edit</button>{job.status === "published" ? <button className="text-button" onClick={() => setStatus(job, "closed")}>Close</button> : <button className="text-button" onClick={() => setStatus(job, "published")}>Publish</button>}<button className="text-button danger-text" onClick={() => remove(job)}>Delete</button></td></tr>)}</tbody></table></div> : <Empty title="No roles posted" text="Create your first job to start receiving applications." />}</section></>;
+    {showForm && <form className="panel edit-form" onSubmit={createJob}><h3>{editId ? "Edit role" : "New role"}</h3><div className="form-grid"><label>Title<input required value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} /></label><label>Location<input required value={form.location} onChange={e => setForm({ ...form, location: e.target.value })} /></label><label>Job type<select value={form.job_type} onChange={e => setForm({ ...form, job_type: e.target.value })}><option>Full-time</option><option>Part-time</option><option>Contract</option><option>Internship</option><option>Remote</option></select></label><label>Required skills<input value={form.required_skills} onChange={e => setForm({ ...form, required_skills: e.target.value })} placeholder="React, TypeScript" /></label><label>Experience in Years<input value={form.experience_requirement} onChange={e => setForm({ ...form, experience_requirement: e.target.value })} placeholder="0 years, 2 years, 5+ years" /></label><label>Expected Salary<input className="salary-manual-input" value={form.expected_salary} onChange={e => setForm({ ...form, expected_salary: e.target.value })} placeholder="e.g. $80,000 annually or Negotiable" /></label><label>Application deadline<input type="datetime-local" value={form.application_deadline} onChange={e => setForm({ ...form, application_deadline: e.target.value })} /></label><label className="wide-field">Responsibilities <small>One item per line</small><textarea rows="3" value={form.responsibilities_text} onChange={e => setForm({ ...form, responsibilities_text: e.target.value })} /></label><label className="wide-field">Requirements <small>One item per line</small><textarea rows="3" value={form.requirements_text} onChange={e => setForm({ ...form, requirements_text: e.target.value })} /></label><label className="wide-field">Description<textarea required minLength="10" rows="5" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} /></label></div><button className="button button-primary">{editId ? "Save changes" : "Publish role"}</button></form>}
+    <section className="panel">{items.length ? <div className="table-wrap"><table><thead><tr><th>Role</th><th>Applicants</th><th>Status</th><th>Actions</th></tr></thead><tbody>{items.map(job => <tr key={job.id}><td><b>{job.title}</b><small>{job.location}</small><small>{[job.experience_requirement, job.expected_salary].filter(Boolean).join(" · ")}</small></td><td><Link to={"/recruiter/applicants?job_id=" + job.id}>Review applicants</Link></td><td><span className={"status status-" + job.status}>{job.status}</span></td><td className="table-actions"><button className="text-button" onClick={() => editJob(job)}>Edit</button>{job.status === "published" ? <button className="text-button" onClick={() => setStatus(job, "closed")}>Close</button> : <button className="text-button" onClick={() => setStatus(job, "published")}>Publish</button>}<button className="text-button danger-text" onClick={() => remove(job)}>Delete</button></td></tr>)}</tbody></table></div> : <Empty title="No roles posted" text="Create your first job to start receiving applications." />}</section></>;
 }
 function ApplicantsPage() {
   const [items, setItems] = useState([]);
@@ -963,10 +1022,10 @@ function AdminPage({ mode = "overview" }) {
 }
 function NotificationsPage() {
   const { user } = useAuth(); const [items, setItems] = useState([]); const [error, setError] = useState(""); const [loading, setLoading] = useState(true);
-  async function load() { setLoading(true); setError(""); try { const data = await api("/notifications"); const notifications = data.notifications || data.items || []; setItems(notifications); if (notifications.some(item => !item.is_read)) { await api("/notifications/read-all", { method: "PATCH" }); setItems(current => current.map(item => ({ ...item, is_read: true }))); } window.dispatchEvent(new Event("skillsphere:badges-refresh")); } catch (e) { setError(e.message); } finally { setLoading(false); } }
-  useEffect(() => { load(); }, []);
+  async function load() { setLoading(true); setError(""); try { const data = await api("/notifications"); const notifications = data.notifications || data.items || []; setItems(notifications); if (user?.role !== "recruiter" && notifications.some(item => !item.is_read)) { await api("/notifications/read-all", { method: "PATCH" }); setItems(current => current.map(item => ({ ...item, is_read: true }))); } window.dispatchEvent(new Event("skillsphere:badges-refresh")); } catch (e) { setError(e.message); } finally { setLoading(false); } }
+  useEffect(() => { load(); }, [user?.role]);
   async function markRead(item) { try { await api("/notifications/" + item.id + "/read", { method: "PATCH" }); setItems(current => current.map(value => value.id === item.id ? { ...value, is_read: true } : value)); window.dispatchEvent(new Event("skillsphere:badges-refresh")); } catch (e) { setError(e.message); } }
-  return <><PageHeader eyebrow="YOUR UPDATES" title="Notifications." description="Application updates and activity from your SkillSphere workspace." /><Notice>{error}</Notice><section className="panel">{loading ? <Loading /> : items.length ? <div className="activity-list">{items.map(item => <div className={"activity-row notification-row " + (item.is_read ? "" : "notification-unread")} key={item.id}><span className="company-tile small-tile"><Bell size={16} /></span><div><b>{item.message}</b><small>{new Date(item.created_at).toLocaleString()}{item.job_title ? " · " + item.job_title : ""}{item.is_read ? " · Read" : " · Unread"}</small>{item.type === "assessment_assigned" && user?.role === "candidate" && item.related_id ? <Link to={"/candidate/assessments/" + item.related_id}>Open assessment</Link> : item.related_url && <Link to={item.related_url}>{user?.role === "recruiter" ? "Open application or interview" : "View application or interview"}</Link>}</div>{!item.is_read && <button className="text-button" onClick={() => markRead(item)}>Mark read</button>}</div>)}</div> : <Empty title="You’re all caught up" text="New application activity will appear here." />}</section></>;
+  return <><PageHeader eyebrow="YOUR UPDATES" title="Notifications." description="Application updates and activity from your SkillSphere workspace." /><Notice>{error}</Notice><section className="panel">{loading ? <Loading /> : items.length ? <div className="activity-list">{items.map(item => <div className={"activity-row notification-row " + (item.is_read ? "" : "notification-unread")} key={item.id}><span className="company-tile small-tile"><Bell size={16} /></span><div><b>{item.message}</b><small>{item.candidate_name ? `${item.candidate_name} · ` : ""}{item.job_title ? item.job_title + " · " : ""}{new Date(item.application_time || item.created_at).toLocaleString()} · {item.is_read ? "Read" : "Unread"}</small>{item.type === "assessment_assigned" && user?.role === "candidate" && item.related_id ? <Link to={"/candidate/assessments/" + item.related_id}>Open assessment</Link> : item.related_url && <Link to={item.related_url} onClick={() => { if (!item.is_read) markRead(item); }}>{user?.role === "recruiter" && item.type === "new_application" ? "Open application" : user?.role === "recruiter" ? "Open application or interview" : "View application or interview"}</Link>}</div>{!item.is_read && <button className="text-button" onClick={() => markRead(item)}>Mark read</button>}</div>)}</div> : <Empty title="You’re all caught up" text="New application activity will appear here." />}</section></>;
 }
 function AssessmentListPage({ audience }) {
   const [items, setItems] = useState([]);
@@ -1017,6 +1076,9 @@ function AssessmentDetailPage({ audience }) {
   const [decisionBusy, setDecisionBusy] = useState(false);
   const [cameraConsent, setCameraConsent] = useState(false);
   const [cameraActive, setCameraActive] = useState(false);
+  const [cameraStream, setCameraStream] = useState(null);
+  const [screenStream, setScreenStream] = useState(null);
+  const [evidenceReview, setEvidenceReview] = useState(null);
   const [proctoringReady, setProctoringReady] = useState(false);
   const [proctoringWarnings, setProctoringWarnings] = useState(0);
   const [proctoringWarningMessage, setProctoringWarningMessage] = useState("");
@@ -1044,15 +1106,9 @@ function AssessmentDetailPage({ audience }) {
       tab_hidden: "The assessment page was moved out of view.",
       window_blur: "The assessment window lost focus.",
       camera_interrupted: "The camera feed was interrupted.",
+      screen_interrupted: "Screen sharing was interrupted. Reconnect it to continue monitoring.",
     };
-    setProctoringWarningMessage(`Warning ${count} of 3: ${messages[eventType] || "A proctoring rule was triggered."} Three warnings will submit the assessment automatically.`);
-  }, []);
-
-  const handleProctoringAutoSubmit = useCallback(result => {
-    submitStarted.current = true;
-    setBusy(false);
-    setAssessment(result);
-    setNotice("Assessment submitted. Your camera is now off.");
+    setProctoringWarningMessage(`Warning ${count}: ${messages[eventType] || "A proctoring rule was triggered."} Your assessment will continue; the timer is unchanged.`);
   }, []);
 
   const loadAssessment = useCallback(async () => {
@@ -1077,10 +1133,19 @@ function AssessmentDetailPage({ audience }) {
     setError("");
     setCameraConsent(false);
     setCameraActive(false);
+    cameraStream?.getTracks().forEach(track => track.stop());
+    screenStream?.getTracks().forEach(track => track.stop());
+    setCameraStream(null);
+    setScreenStream(null);
     setProctoringReady(false);
     setProctoringWarningMessage("");
     loadAssessment();
   }, [assessmentId, loadAssessment]);
+
+  useEffect(() => () => {
+    cameraStream?.getTracks().forEach(track => track.stop());
+    screenStream?.getTracks().forEach(track => track.stop());
+  }, [cameraStream, screenStream]);
 
   useEffect(() => {
     if (isCandidate || !assessment || !["submitted", "passed", "failed", "expired"].includes(assessment.status)) return undefined;
@@ -1090,6 +1155,15 @@ function AssessmentDetailPage({ audience }) {
       .then(data => { if (!cancelled) setAnswerReview(data); })
       .catch(err => { if (!cancelled) setError(err.message); })
       .finally(() => { if (!cancelled) setReviewLoading(false); });
+    return () => { cancelled = true; };
+  }, [assessment, assessmentId, isCandidate]);
+
+  useEffect(() => {
+    if (isCandidate || !assessment) return undefined;
+    let cancelled = false;
+    api(`/proctoring/assessments/${assessmentId}/evidence`)
+      .then(data => { if (!cancelled) setEvidenceReview(data); })
+      .catch(err => { if (!cancelled) setError(err.message); });
     return () => { cancelled = true; };
   }, [assessment, assessmentId, isCandidate]);
 
@@ -1116,7 +1190,7 @@ function AssessmentDetailPage({ audience }) {
       api(`/assessments/${assessmentId}/answers`, {
         method: "PUT",
         body: json({ answers: answersRef.current }),
-      }).then(() => setSaving(false)).catch(err => {
+      }).then(() => { setSaving(false); setError(""); }).catch(err => {
         setSaving(false);
         setError(err.message);
       });
@@ -1274,16 +1348,49 @@ function AssessmentDetailPage({ audience }) {
       setError(err.message);
     }
   }
-  function enableCameraMonitoring() {
+  async function enableCameraMonitoring() {
     setError("");
     setRound1UploadError("");
-    if (!window.MediaRecorder || !window.indexedDB || !["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"].some(type => MediaRecorder.isTypeSupported(type))) {
-      setError("This browser cannot record and safely retain the required assessment video. Please use an up-to-date Chrome or Edge browser.");
+    if (!window.MediaRecorder || !window.indexedDB || !["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"].some(type => MediaRecorder.isTypeSupported(type))) {
+      setError("This browser cannot record camera video and microphone audio. Please use an up-to-date Chrome or Edge browser.");
       return;
     }
-    setProctoringReady(false);
-    setCameraActive(true);
+    let sharedScreen;
+    let camera;
+    try {
+      if (!navigator.mediaDevices?.getDisplayMedia) throw new Error("Screen sharing is not supported by this browser.");
+      sharedScreen = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 5 }, audio: false });
+      camera = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      if (!camera.getAudioTracks().some(track => track.readyState === "live")) throw new Error("A working microphone is required to record assessment audio. Check microphone permission and try again.");
+      setScreenStream(sharedScreen);
+      setCameraStream(camera);
+      setProctoringReady(false);
+      setCameraActive(true);
+    } catch (err) {
+      sharedScreen?.getTracks().forEach(track => track.stop());
+      camera?.getTracks().forEach(track => track.stop());
+      setError(err.message || "Allow camera and screen sharing before beginning the assessment.");
+    }
   }
+  async function reconnectProctoring() {
+    let nextScreen;
+    let nextCamera;
+    try {
+      nextScreen = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 5 }, audio: false });
+      nextCamera = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      if (!nextCamera.getAudioTracks().some(track => track.readyState === "live")) throw new Error("A working microphone is required to record assessment audio. Check microphone permission and try again.");
+      cameraStream?.getTracks().forEach(track => track.stop());
+      screenStream?.getTracks().forEach(track => track.stop());
+      setScreenStream(nextScreen);
+      setCameraStream(nextCamera);
+      setProctoringReady(false);
+    } catch (err) {
+      nextScreen?.getTracks().forEach(track => track.stop());
+      nextCamera?.getTracks().forEach(track => track.stop());
+      setError(err.message || "Allow camera and screen sharing to reconnect monitoring.");
+    }
+  }
+
   async function submitAssessment() {
     if (busy || submitStarted.current) return;
     const unanswered = Math.max(0, questions.length - Object.keys(answersRef.current).length);
@@ -1356,16 +1463,16 @@ function AssessmentDetailPage({ audience }) {
     </section>}
     {isCandidate && ["assigned", "in_progress"].includes(assessment.status) && <section className="panel assessment-instructions proctoring-consent-panel">
       <span className="eyebrow">CAMERA MONITORING</span><h2>Keep your assessment session secure.</h2>
-      <p>Camera checks run locally for face visibility, multiple people, and visible phones, books, or remotes. Leaving the camera view, restricted items, losing window focus, or interrupting the camera can add a warning. After 3 warnings, the assessment is submitted automatically. Video recording captures no audio or screenshots and is uploaded securely for the recruiter responsible for your application. If camera monitoring is not possible for you, contact the recruiter before starting to arrange an accommodation.</p>
-      {!cameraActive && <label className="proctoring-consent"><input type="checkbox" checked={cameraConsent} onChange={event => setCameraConsent(event.target.checked)} /><span>I consent to camera-based face-presence checks and video recording during this assessment. I understand the video will be shared with the recruiter handling my application.</span></label>}
-      {!cameraActive && <button className="button button-primary" disabled={!cameraConsent} onClick={enableCameraMonitoring}><ShieldCheck size={16} />Enable camera monitoring</button>}
+      <p>Camera checks run locally for face visibility, multiple people, and visible phones, books, or remotes. The assessment records when its tab or window loses focus. Camera video and microphone audio are recorded; camera photos and the shared assessment screen are captured every 30 seconds and when a warning occurs. Evidence is stored privately on the SkillSphere server and shared with the recruiter responsible for your application. Warnings never submit or pause your assessment. The timer continues until you submit or time expires. Allow camera, microphone, and screen sharing before you begin. If monitoring is not possible for you, contact the recruiter about an accommodation.</p>
+      {!cameraActive && <label className="proctoring-consent"><input type="checkbox" checked={cameraConsent} onChange={event => setCameraConsent(event.target.checked)} /><span>I consent to camera monitoring, recording of camera video and microphone audio, and camera and screen captures every 30 seconds and when a rule is triggered. I understand that this evidence will be securely stored and shared with the recruiter handling my application.</span></label>}
+      {!cameraActive && <button className="button button-primary" disabled={!cameraConsent} onClick={enableCameraMonitoring}><ShieldCheck size={16} />Enable camera and microphone monitoring</button>}
       {proctoringReady && assessment.status === "assigned" && <button className="button button-primary" disabled={busy} onClick={startAssessment}>{busy ? "Starting…" : "Start assessment"} <ArrowRight size={16} /></button>}
       {proctoringReady && assessment.status === "in_progress" && !assessment.questions?.length && <p className="proctoring-loading">Restoring your saved assessment…</p>}
       {round1UploadError && <Notice>{round1UploadError}</Notice>}
       {proctoringReady && <small className="proctoring-warning-summary">{proctoringWarnings} monitoring warnings recorded so far.</small>}
       {proctoringReady && proctoringWarningMessage && <Notice>{proctoringWarningMessage}</Notice>}
     </section>}
-    {isCandidate && cameraActive && <ProctoringMonitor active={cameraActive} assessmentId={assessmentId} recordingActive={assessment.status === "in_progress" && proctoringReady} recordingFinalized={["submitted", "passed", "failed", "expired"].includes(assessment.status)} onReady={handleProctoringReady} onWarningCount={setProctoringWarnings} onWarningEvent={handleProctoringWarning} onAutoSubmit={handleProctoringAutoSubmit} onRecordingReady={uploadFinalRound1Recording} onRecordingError={handleRound1RecordingError} />}
+    {isCandidate && cameraActive && <ProctoringMonitor active={cameraActive} assessmentId={assessmentId} cameraStream={cameraStream} screenStream={screenStream} onReconnect={reconnectProctoring} recordingActive={assessment.status === "in_progress" && proctoringReady} recordingFinalized={["submitted", "passed", "failed", "expired"].includes(assessment.status)} onReady={handleProctoringReady} onWarningCount={setProctoringWarnings} onWarningEvent={handleProctoringWarning} onRecordingReady={uploadFinalRound1Recording} onRecordingError={handleRound1RecordingError} />}
     {!isCandidate && !["submitted", "passed", "failed", "expired", "question_shortage"].includes(assessment.status) && <section className="panel assessment-instructions">
       <span className="eyebrow">ASSESSMENT STATUS</span>
       <h2>{assessment.status === "in_progress" ? "Candidate is taking this assessment." : assessment.status === "assigned" ? "Assessment is assigned." : assessment.status === "published" ? "Assessment is ready to assign." : "Assessment is not yet available."}</h2>
@@ -1397,7 +1504,7 @@ function AssessmentDetailPage({ audience }) {
       <div className="assessment-question-nav">{questions.map((question, index) => <button key={question.question_id} className={`${index === questionIndex ? "question-current " : ""}${answers[question.question_id] !== undefined ? "question-answered" : ""}`} onClick={() => setQuestionIndex(index)} aria-label={`Go to question ${index + 1}`}>{index + 1}</button>)}</div>
     </section>}
     {["submitted", "passed", "failed", "expired"].includes(assessment.status) && <section className="panel assessment-results">
-      <div className="assessment-result-heading"><div><span className="eyebrow">ASSESSMENT RESULT</span><h2>{isCandidate ? "Your assessment was submitted successfully." : `${assessment.candidate?.full_name || "Candidate"}'s assessment result`}</h2></div><span className={`status status-${assessment.result}`}>{assessment.result?.toUpperCase()}</span></div>
+      <div className="assessment-result-heading"><div><span className="eyebrow">ASSESSMENT RESULT</span><h2 className={!isCandidate && evidenceReview?.false_actions >= 5 ? "proctoring-candidate-high-risk" : ""}>{!isCandidate && evidenceReview?.false_actions >= 5 && <span className="proctoring-risk-badge">Review flagged activity · </span>}{isCandidate ? "Your assessment was submitted successfully." : `${assessment.candidate?.full_name || "Candidate"}'s assessment result`}</h2></div><span className={`status status-${assessment.result}`}>{assessment.result?.toUpperCase()}</span></div>
       <div className="assessment-score"><strong>{resultPercentageLabel}%</strong><span>{assessment.passing_percentage ?? (assessment.total_marks ? assessment.passing_marks / assessment.total_marks * 100 : 70)}% passing threshold</span><div className="meter"><i style={{ width: `${resultPercentage}%` }} /></div></div>
       <div className="assessment-result-stats"><div><b>{assessment.correct_count}</b><span>Correct</span></div><div><b>{assessment.incorrect_count}</b><span>Incorrect</span></div><div><b>{assessment.unanswered_count}</b><span>Unanswered</span></div><div><b>{assessment.total_questions}</b><span>Total questions</span></div></div>
       <div className="assessment-eligibility"><span className={`status ${assessment.second_round_eligible ? "status-selected" : "status-rejected"}`}>{assessment.second_round_eligible ? "Eligible for second round" : "Not eligible for second round"}</span><span>{isCandidate ? "The recruiter decides whether to invite you; passing does not automatically select or hire you." : `Next-round decision: ${(assessment.second_round_decision || "pending").replaceAll("_", " ")}`}</span></div>
@@ -1418,6 +1525,14 @@ function AssessmentDetailPage({ audience }) {
       {round1Recording?.duration != null && <small>Duration: {Math.floor(round1Recording.duration / 60)}m {Math.round(round1Recording.duration % 60)}s</small>}
       {round1UploadError && <Notice>{round1UploadError}</Notice>}
       {round1HasLocalCopy && round1UploadState !== "uploading" && <>{round1UploadState !== "uploaded" && <button className="button button-primary" onClick={retryRound1Upload}>Retry video upload</button>}<button className="button button-outline" onClick={discardLocalRound1Copy}>Discard local retry copy</button></>}
+    </section>}
+    {!isCandidate && evidenceReview && <section className="panel proctoring-evidence-panel">
+      <span className="eyebrow">PROCTORING REVIEW</span><h2>False actions: {evidenceReview.false_actions}</h2>
+      {evidenceReview.false_actions >= 5 && <p className="proctoring-risk-summary">This assessment has several recorded warnings and may need closer review.</p>}
+      <h3>Violation history</h3>
+      {evidenceReview.events.length ? <ol className="proctoring-event-list">{evidenceReview.events.map(event => <li key={event.id}><time>{new Date(event.occurred_at).toLocaleString()}</time><span>{event.description}</span></li>)}</ol> : <p>No suspicious actions were recorded.</p>}
+      <h3>Camera photos and screen captures</h3>
+      {evidenceReview.evidence.length ? <div className="proctoring-evidence-grid">{evidenceReview.evidence.map(item => <figure key={item.id}><ProtectedEvidenceImage path={item.image_path} alt={`${item.capture_type} evidence captured ${new Date(item.captured_at).toLocaleString()}`} /><figcaption><strong>{item.capture_type === "camera" ? "Camera photo" : "Assessment screen"}</strong><time>{new Date(item.captured_at).toLocaleString()}</time>{item.description && <span>{item.description}</span>}</figcaption></figure>)}</div> : <p>No photo or screen evidence is available.</p>}
     </section>}
     {!isCandidate && ["submitted", "passed", "failed", "expired"].includes(assessment.status) && <section className="panel round1-recording-panel">
       <span className="eyebrow">ROUND 1 RECORDING</span><h2>Candidate video</h2>

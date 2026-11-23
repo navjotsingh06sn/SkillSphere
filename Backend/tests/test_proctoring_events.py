@@ -18,7 +18,7 @@ class ProctoringEventTests(unittest.IsolatedAsyncioTestCase):
             updated_at=None,
         )
         database = SimpleNamespace(
-            scalar=AsyncMock(side_effect=[session, None]),
+            scalar=AsyncMock(side_effect=[session, SimpleNamespace(status="in_progress")]),
             add=Mock(),
             commit=AsyncMock(),
         )
@@ -39,7 +39,7 @@ class ProctoringEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(hasattr(event, "screenshot"))
         database.commit.assert_awaited_once()
 
-    async def test_duplicate_warning_is_suppressed_by_server_cooldown(self):
+    async def test_repeated_warning_is_recorded_with_a_fresh_timestamp(self):
         session_id = uuid4()
         session = SimpleNamespace(
             id=session_id,
@@ -48,7 +48,7 @@ class ProctoringEventTests(unittest.IsolatedAsyncioTestCase):
             warning_count=1,
         )
         database = SimpleNamespace(
-            scalar=AsyncMock(side_effect=[session, uuid4()]),
+            scalar=AsyncMock(side_effect=[session, SimpleNamespace(status="in_progress")]),
             add=Mock(),
             commit=AsyncMock(),
         )
@@ -60,10 +60,10 @@ class ProctoringEventTests(unittest.IsolatedAsyncioTestCase):
             database,
         )
 
-        self.assertFalse(result["recorded"])
-        self.assertEqual(result["warning_count"], 1)
-        database.add.assert_not_called()
-        database.commit.assert_not_awaited()
+        self.assertTrue(result["recorded"])
+        self.assertEqual(result["warning_count"], 2)
+        self.assertEqual(database.add.call_count, 1)
+        database.commit.assert_awaited_once()
 
     def test_only_known_monitoring_events_are_accepted(self):
         with self.assertRaises(ValidationError):

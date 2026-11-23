@@ -31,3 +31,6 @@ __pycache__/
 !Backend/.env.example
 .neon
 node_modules/
+
+# Private candidate camera and screen evidence
+Backend/private_proctoring_evidence/

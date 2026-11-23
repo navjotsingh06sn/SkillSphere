@@ -12,16 +12,19 @@ const RESTRICTED_ITEMS = new Set(["cell phone", "book", "remote"]);
 export default function ProctoringMonitor({
   active,
   assessmentId,
+  cameraStream,
+  screenStream,
   onReady,
   onWarningCount,
   onWarningEvent,
-  onAutoSubmit,
+  onReconnect,
   recordingActive = false,
   recordingFinalized = false,
   onRecordingReady,
   onRecordingError,
 }) {
   const videoRef = useRef(null);
+  const screenVideoRef = useRef(null);
   const streamRef = useRef(null);
   const finalizedRef = useRef(recordingFinalized);
   finalizedRef.current = recordingFinalized;
@@ -30,7 +33,6 @@ export default function ProctoringMonitor({
   const recordingReadyCallback = useRef(onRecordingReady);
   const recordingErrorCallback = useRef(onRecordingError);
   const warningEventCallback = useRef(onWarningEvent);
-  const autoSubmitCallback = useRef(onAutoSubmit);
   const recordingActiveRef = useRef(recordingActive);
   recordingActiveRef.current = recordingActive;
   const [attempt, setAttempt] = useState(0);
@@ -46,17 +48,18 @@ export default function ProctoringMonitor({
     recordingReadyCallback.current = onRecordingReady;
     recordingErrorCallback.current = onRecordingError;
     warningEventCallback.current = onWarningEvent;
-    autoSubmitCallback.current = onAutoSubmit;
-  }, [onReady, onWarningCount, onWarningEvent, onAutoSubmit]);
+  }, [onReady, onWarningCount, onWarningEvent]);
 
   useEffect(() => {
     if (!active) return undefined;
 
-    let stream;
+    let stream = cameraStream;
+    let sharedScreen = screenStream;
     let detector;
     let objectDetector;
     let sessionId;
     let detectTimer;
+    let captureTimer;
     let disposed = false;
     let missingSince = null;
     let multipleSince = null;
@@ -65,12 +68,35 @@ export default function ProctoringMonitor({
     let restrictedStreak = 0;
     let lastObjectCheck = 0;
     const lastReported = new Map();
+    let lastFocusLossAt = 0;
+
+    const captureFrame = async (video, captureType, eventId = null) => {
+      if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+      const scale = Math.min(1, 1280 / (video.videoWidth || 1280));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round((video.videoWidth || 640) * scale));
+      canvas.height = Math.max(1, Math.round((video.videoHeight || 480) * scale));
+      canvas.getContext("2d", { alpha: false })?.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const imageData = canvas.toDataURL("image/jpeg", 0.62);
+      await api(`/proctoring/sessions/${sessionId}/evidence`, {
+        method: "POST", body: json({ capture_type: captureType, image_data: imageData, captured_at: new Date().toISOString(), event_id: eventId }),
+      });
+    };
+    const captureEvidence = async (eventId = null) => {
+      if (!sessionId || !recordingActiveRef.current) return;
+      const results = await Promise.allSettled([
+        captureFrame(videoRef.current, "camera", eventId),
+        captureFrame(screenVideoRef.current, "screen", eventId),
+      ]);
+      const failed = results.find(result => result.status === "rejected");
+      if (failed) setEventError(`Evidence capture issue: ${failed.reason?.message || "capture failed"}`);
+    };
 
     const report = async (eventType, metadata = {}) => {
-      if (!recordingActiveRef.current) return;
       const now = Date.now();
+      const focusEvent = eventType === "tab_hidden" || eventType === "window_blur";
       const last = lastReported.get(eventType);
-      if (last && now - last < 10_000) return;
+      if (!focusEvent && last && now - last < 10_000) return;
       lastReported.set(eventType, now);
       if (!sessionId) return;
       try {
@@ -84,12 +110,10 @@ export default function ProctoringMonitor({
         if (result.recorded) {
           setWarningCount(result.warning_count);
           warningCallback.current?.(result.warning_count);
-          if (eventType !== "camera_reconnected") {
+          if (eventType !== "camera_reconnected" && eventType !== "screen_reconnected") {
             warningEventCallback.current?.(eventType, result.warning_count, metadata.item_name);
           }
-        }
-        if (result.auto_submitted && result.assessment) {
-          autoSubmitCallback.current?.(result.assessment);
+          if (result.event_id && ["face_missing", "face_away", "multiple_faces", "restricted_item", "tab_hidden", "window_blur", "camera_interrupted", "screen_interrupted"].includes(eventType)) void captureEvidence(result.event_id);
         }
         setEventError("");
       } catch (error) {
@@ -114,10 +138,7 @@ export default function ProctoringMonitor({
         if (!navigator.mediaDevices?.getUserMedia) {
           throw new Error("Camera access requires a supported browser and secure connection.");
         }
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "user" },
-          audio: false,
-        });
+        if (!stream || !sharedScreen) throw new Error("Camera and screen sharing permissions are required before starting.");
         if (disposed) {
           stopTracks();
           return;
@@ -128,6 +149,23 @@ export default function ProctoringMonitor({
         if (!video) throw new Error("The camera preview could not be initialized.");
         video.srcObject = stream;
         await video.play();
+        if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+          await new Promise((resolve, reject) => {
+            const timeout = window.setTimeout(() => reject(new Error("The camera is connected but is not sending picture frames. Close other apps using the camera, check its shutter, then reconnect.")), 8000);
+            const onFrame = () => {
+              if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+              window.clearTimeout(timeout);
+              video.removeEventListener("loadeddata", onFrame);
+              resolve();
+            };
+            video.addEventListener("loadeddata", onFrame);
+            onFrame();
+          });
+        }
+        const screenVideo = screenVideoRef.current;
+        if (!screenVideo) throw new Error("The shared screen preview could not be initialized.");
+        screenVideo.srcObject = sharedScreen;
+        await screenVideo.play();
 
         const session = await api("/proctoring/sessions/start", {
           method: "POST",
@@ -136,6 +174,7 @@ export default function ProctoringMonitor({
             consent_accepted: true,
             camera_permission_granted: true,
             recording_consent_accepted: true,
+            screen_permission_granted: true,
           }),
         });
         sessionId = session.session_id;
@@ -147,7 +186,7 @@ export default function ProctoringMonitor({
         detector = await FaceDetector.createFromOptions(files, {
           baseOptions: { modelAssetPath: MODEL_URL, delegate: "CPU" },
           runningMode: "VIDEO",
-          minDetectionConfidence: 0.6,
+          minDetectionConfidence: 0.45,
         });
         objectDetector = await ObjectDetector.createFromOptions(files, {
           baseOptions: { modelAssetPath: OBJECT_MODEL_URL, delegate: "CPU" },
@@ -177,11 +216,19 @@ export default function ProctoringMonitor({
           };
         }
         const onVisibilityChange = () => {
-          if (document.hidden) void report("tab_hidden");
+          if (document.hidden) { lastFocusLossAt = Date.now(); void report("tab_hidden"); }
         };
         const onWindowBlur = () => {
-          if (!document.hidden) void report("window_blur");
+          if (!document.hidden && Date.now() - lastFocusLossAt > 750) void report("window_blur");
         };
+        const screenTrack = sharedScreen.getVideoTracks()[0];
+        if (screenTrack) {
+          screenTrack.onended = () => {
+            setStatus("Screen sharing stopped. Reconnect screen sharing to continue monitoring.");
+            setCanReconnect(true);
+            void report("screen_interrupted");
+          };
+        }
         document.addEventListener("visibilitychange", onVisibilityChange);
         window.addEventListener("blur", onWindowBlur);
         removeFocusListeners = () => {
@@ -257,7 +304,8 @@ export default function ProctoringMonitor({
           }
         }, 500);
 
-        setStatus("Camera monitoring active.");
+        captureTimer = window.setInterval(() => void captureEvidence(), 30_000);
+        setStatus("Camera and screen monitoring active.");
         readyCallback.current?.();
       } catch (error) {
         if (disposed) return;
@@ -273,13 +321,17 @@ export default function ProctoringMonitor({
     return () => {
       disposed = true;
       window.clearInterval(detectTimer);
+      window.clearInterval(captureTimer);
       removeFocusListeners?.();
       detector?.close();
       objectDetector?.close();
       streamRef.current = null;
-      stopTracks();
+      // The assessment page owns these permission streams. This effect can be
+      // replayed by React StrictMode, so cleanup here must not kill its tracks.
+      stream?.getTracks().forEach(track => { track.onended = null; track.onmute = null; track.onunmute = null; });
+      if (sharedScreen) sharedScreen.getTracks().forEach(track => { track.onended = null; });
     };
-  }, [active, assessmentId, attempt]);
+  }, [active, assessmentId, attempt, cameraStream, screenStream]);
 
   useEffect(() => {
     if (!active || !recordingFinalized) return;
@@ -292,12 +344,15 @@ export default function ProctoringMonitor({
       track.stop();
     });
     if (videoRef.current) videoRef.current.srcObject = null;
-  }, [active, recordingFinalized]);
+    screenStream?.getTracks().forEach(track => track.stop());
+    if (screenVideoRef.current) screenVideoRef.current.srcObject = null;
+  }, [active, recordingFinalized, screenStream]);
 
   useEffect(() => {
     if (!active || !recordingActive || !streamRef.current) return undefined;
     if (!window.MediaRecorder) { recordingErrorCallback.current?.("This browser does not support video recording."); return undefined; }
     let recorder;
+    let recordingStream;
     let stopped = false;
     let chunks = [];
     let nextIndex = 0;
@@ -310,10 +365,16 @@ export default function ProctoringMonitor({
         if (stopped) return;
         chunks = draft?.chunks || [];
         nextIndex = chunks.length;
-        const preferred = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"].find(type => MediaRecorder.isTypeSupported(type));
+        const preferred = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"].find(type => MediaRecorder.isTypeSupported(type));
         if (!preferred) throw new Error("This browser cannot record video in a supported format.");
-        mimeType = draft?.mimeType?.startsWith("video/") ? draft.mimeType : preferred;
-        recorder = new MediaRecorder(streamRef.current, { mimeType });
+        mimeType = draft?.mimeType?.startsWith("video/") && MediaRecorder.isTypeSupported(draft.mimeType) ? draft.mimeType : preferred;
+        const sourceStream = streamRef.current;
+        const cameraTrack = sourceStream.getVideoTracks().find(track => track.readyState === "live" && !track.muted);
+        const microphoneTrack = sourceStream.getAudioTracks().find(track => track.readyState === "live" && !track.muted);
+        if (!cameraTrack) throw new Error("The camera is not sending a live video track. Reconnect the camera and check its privacy shutter.");
+        if (!microphoneTrack) throw new Error("The microphone is not sending a live audio track. Check microphone permission and reconnect monitoring.");
+        recordingStream = new MediaStream([cameraTrack.clone(), microphoneTrack.clone()]);
+        recorder = new MediaRecorder(recordingStream, { mimeType });
         recorder.ondataavailable = (event) => {
           if (!event.data?.size) return;
           const part = event.data;
@@ -322,19 +383,28 @@ export default function ProctoringMonitor({
           persistQueue = persistQueue.then(() => saveRound1Chunk(assessmentId, index, part, mimeType));
           persistQueue.catch(error => reportError(error.message));
         };
-        recorder.onerror = () => reportError("The browser could not continue recording. Your saved video remains available to retry.");
+        recorder.onerror = (event) => reportError(event.error?.message ? `Camera and microphone recording failed: ${event.error.message}` : "The browser could not start camera and microphone recording. Close other apps using these devices, then reconnect monitoring.");
         recorder.onstop = async () => {
-          try { await persistQueue; } catch (error) { reportError(error.message); }
-          if (!chunks.length) {
-            reportError("No video data was captured. Keep the camera permission enabled and try again.");
-            return;
+          try {
+            try { await persistQueue; } catch (error) { reportError(error.message); }
+            if (!chunks.length) {
+              reportError("No camera or microphone recording data was captured. Reconnect monitoring and try again.");
+              return;
+            }
+            const blob = new Blob(chunks, { type: mimeType });
+            try { await saveRound1Final(assessmentId, blob, mimeType); }
+            catch (error) { reportError(error.message); }
+            if (finalizedRef.current) recordingReadyCallback.current?.(blob, mimeType);
+          } finally {
+            recordingStream?.getTracks().forEach(track => track.stop());
           }
-          const blob = new Blob(chunks, { type: mimeType });
-          try { await saveRound1Final(assessmentId, blob, mimeType); }
-          catch (error) { reportError(error.message); }
-          if (finalizedRef.current) recordingReadyCallback.current?.(blob, mimeType);
         };
-        recorder.start(5000);
+        try {
+          recorder.start(5000);
+        } catch (error) {
+          recordingStream.getTracks().forEach(track => track.stop());
+          throw new Error(`Camera and microphone recording could not start (${error.message}). Reconnect monitoring and close other apps using the camera or microphone.`);
+        }
       } catch (error) {
         reportError(error.message || "Video recording could not start.");
       }
@@ -352,18 +422,19 @@ export default function ProctoringMonitor({
     <section className="proctoring-monitor" aria-live="polite">
       <div className="proctoring-camera">
         <video ref={videoRef} muted playsInline aria-label="Local camera preview" />
-        <span><Camera size={15} /> Camera preview is processed locally</span>
+        <video ref={screenVideoRef} muted playsInline aria-hidden="true" className="proctoring-screen-source" />
+        <span><Camera size={15} /> Camera, microphone audio, and screen monitoring active</span>
       </div>
       <div className="proctoring-status">
         <div>
           <span className="eyebrow"><ShieldCheck size={14} /> CAMERA MONITORING</span>
           <p>{status}</p>
-          <small>{warningCount} monitoring warnings recorded · no audio is captured. Round 1 video is saved for recruiter review.</small>
+          <small>{warningCount} monitoring warnings recorded · camera video and microphone audio are being recorded. 30-second photos and suspicious-action evidence are saved for recruiter review.</small>
           {eventError && <p className="proctoring-error">Event logging issue: {eventError}</p>}
         </div>
         {canReconnect && (
-          <button className="button button-outline" onClick={() => setAttempt(value => value + 1)}>
-            <RefreshCw size={15} /> Reconnect
+          <button className="button button-outline" onClick={() => { setCanReconnect(false); onReconnect?.(); }}>
+            <RefreshCw size={15} /> Reconnect camera and screen
           </button>
         )}
       </div>

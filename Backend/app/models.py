@@ -12,6 +12,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text as sql_text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -225,11 +226,8 @@ class Job(Base):
         JSONB, default=list, nullable=False
     )
 
-    experience_min: Mapped[int | None] = mapped_column(Integer)
-    experience_max: Mapped[int | None] = mapped_column(Integer)
-
-    salary_min: Mapped[float | None] = mapped_column(Float)
-    salary_max: Mapped[float | None] = mapped_column(Float)
+    experience_requirement: Mapped[str | None] = mapped_column(String(120))
+    expected_salary: Mapped[str | None] = mapped_column(String(160))
 
     status: Mapped[str] = mapped_column(
         String(30), default="draft", index=True, nullable=False
@@ -469,6 +467,8 @@ class SavedJob(Base):
 
 class Notification(Base):
     __tablename__ = "notifications"
+
+    __table_args__ = (Index("uq_notifications_new_application", "user_id", "related_id", unique=True, postgresql_where=sql_text("type = 'new_application' AND related_id IS NOT NULL")),)
 
     id: Mapped[uuid.UUID] = uuid_pk()
 
@@ -981,6 +981,26 @@ class ProctoringEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
+
+
+class ProctoringEvidence(Base):
+    __tablename__ = "proctoring_evidence"
+
+    __table_args__ = (Index("ix_proctoring_evidence_session_time", "session_id", "captured_at"),)
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    session_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("proctoring_sessions.id", ondelete="CASCADE"), nullable=False)
+    assessment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("assessments.id", ondelete="CASCADE"), nullable=False, index=True)
+    candidate_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    recruiter_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    event_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("proctoring_events.id", ondelete="SET NULL"))
+    capture_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    storage_path: Mapped[str] = mapped_column(String(1000), unique=True, nullable=False)
+    storage_key: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    format: Mapped[str] = mapped_column(String(20), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
 
 class ChatConversation(Base):

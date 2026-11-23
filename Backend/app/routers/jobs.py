@@ -34,8 +34,8 @@ async def list_jobs(
     location: str | None = None,
     job_type: str | None = None,
     skill: str | None = None,
-    min_salary: int | None = Query(default=None, ge=0),
-    max_experience: int | None = Query(default=None, ge=0, le=60),
+    expected_salary: str | None = Query(default=None, max_length=160),
+    experience_requirement: str | None = Query(default=None, max_length=120),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=12, ge=1, le=50),
     sort: str = "newest",
@@ -50,6 +50,8 @@ async def list_jobs(
                 Job.title.ilike(pattern),
                 Job.description.ilike(pattern),
                 Job.company_name.ilike(pattern),
+                Job.experience_requirement.ilike(pattern),
+                Job.expected_salary.ilike(pattern),
             )
         )
 
@@ -64,16 +66,11 @@ async def list_jobs(
             cast(Job.required_skills, String).ilike(f"%{skill.strip()}%")
         )
 
-    if min_salary is not None:
-        conditions.append(
-            or_(
-                Job.salary_min >= min_salary,
-                Job.salary_max >= min_salary,
-            )
-        )
+    if expected_salary and expected_salary.strip():
+        conditions.append(Job.expected_salary.ilike(f"%{expected_salary.strip()}%"))
 
-    if max_experience is not None:
-        conditions.append(Job.experience_min <= max_experience)
+    if experience_requirement and experience_requirement.strip():
+        conditions.append(Job.experience_requirement.ilike(f"%{experience_requirement.strip()}%"))
 
     total_result = await db.execute(
         select(func.count(Job.id)).where(*conditions)
@@ -84,16 +81,6 @@ async def list_jobs(
 
     if sort == "oldest":
         query = query.order_by(Job.created_at.asc())
-    elif sort == "salary_high":
-        query = query.order_by(
-            Job.salary_min.desc().nullslast(),
-            Job.created_at.desc(),
-        )
-    elif sort == "salary_low":
-        query = query.order_by(
-            Job.salary_min.asc().nullslast(),
-            Job.created_at.desc(),
-        )
     else:
         query = query.order_by(Job.created_at.desc())
 
@@ -139,15 +126,6 @@ async def create_job(
             detail="Create your company profile before posting a job.",
         )
 
-    if (
-        data.experience_max is not None
-        and data.experience_max < data.experience_min
-    ):
-        raise HTTPException(
-            status_code=422,
-            detail="Maximum experience must be at least the minimum.",
-        )
-
     extra = {}
 
     if data.application_deadline:
@@ -165,19 +143,9 @@ async def create_job(
         requirements=data.requirements,
         required_skills=data.required_skills,
         location=data.location,
-        experience_min=data.experience_min,
-        experience_max=data.experience_max,
+        experience_requirement=data.experience_requirement,
         job_type=data.job_type,
-        salary_min=(
-            float(data.salary_min)
-            if data.salary_min is not None
-            else None
-        ),
-        salary_max=(
-            float(data.salary_max)
-            if data.salary_max is not None
-            else None
-        ),
+        expected_salary=data.expected_salary,
         status=data.status,
         extra_data=extra,
     )
@@ -239,34 +207,15 @@ async def update_job(
             detail="Job was not found.",
         )
 
-    if (
-        data.experience_max is not None
-        and data.experience_max < data.experience_min
-    ):
-        raise HTTPException(
-            status_code=422,
-            detail="Maximum experience must be at least the minimum.",
-        )
-
     job.title = data.title
     job.description = data.description
     job.responsibilities = data.responsibilities
     job.requirements = data.requirements
     job.required_skills = data.required_skills
     job.location = data.location
-    job.experience_min = data.experience_min
-    job.experience_max = data.experience_max
+    job.experience_requirement = data.experience_requirement
     job.job_type = data.job_type
-    job.salary_min = (
-        float(data.salary_min)
-        if data.salary_min is not None
-        else None
-    )
-    job.salary_max = (
-        float(data.salary_max)
-        if data.salary_max is not None
-        else None
-    )
+    job.expected_salary = data.expected_salary
     job.status = data.status
     job.updated_at = datetime.now(timezone.utc)
 

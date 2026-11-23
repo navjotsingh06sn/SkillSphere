@@ -4,14 +4,14 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import (
     get_current_user,
     get_database,
 )
-from app.models import Notification
+from app.models import Application, Job, Notification, User
 from app.pg_utils import parse_uuid, serialize_model
 
 logger = logging.getLogger(__name__)
@@ -50,21 +50,32 @@ async def list_notifications(
         conditions.append(Notification.is_read.is_(False))
 
     result = await db.execute(
-        select(Notification)
+        select(Notification, Job.title, Application.id, User.full_name)
+        .outerjoin(Job, Job.id == Notification.job_id)
+        .outerjoin(Application, Application.id == Notification.related_id)
+        .outerjoin(User, User.id == Application.candidate_id)
         .where(*conditions)
         .order_by(Notification.created_at.desc())
         .limit(limit)
         .offset(offset)
     )
 
-    notifications = result.scalars().all()
+    rows = result.all()
+    payloads = []
+    for notification, job_title, application_id, candidate_name in rows:
+        item = serialize_model(notification)
+        if job_title:
+            item["job_title"] = job_title
+        if notification.type == "new_application":
+            item["candidate_name"] = candidate_name or "Candidate"
+            item["application_time"] = notification.created_at.isoformat()
+            if application_id is not None:
+                item["related_url"] = f"/recruiter/applicants/{application_id}"
+        payloads.append(item)
 
     return {
-        "notifications": [
-            serialize_model(notification)
-            for notification in notifications
-        ],
-        "count": len(notifications),
+        "notifications": payloads,
+        "count": len(payloads),
         "limit": limit,
         "offset": offset,
     }
@@ -77,16 +88,23 @@ async def unread_notification_count(
 ):
     user_id = parse_uuid(user["id"], "user id")
 
-    from sqlalchemy import func
-
-    result = await db.execute(
+    unread_count = await db.scalar(
         select(func.count(Notification.id)).where(
             Notification.user_id == user_id,
             Notification.is_read.is_(False),
         )
     )
+    unread_applications = 0
+    if user.get("role") == "recruiter":
+        unread_applications = await db.scalar(
+            select(func.count(Notification.id)).where(
+                Notification.user_id == user_id,
+                Notification.type == "new_application",
+                Notification.is_read.is_(False),
+            )
+        ) or 0
 
-    return {"unread_count": result.scalar_one()}
+    return {"unread_count": unread_count or 0, "unread_applications": unread_applications}
 
 
 @router.patch("/{notification_id}/read")
@@ -118,6 +136,7 @@ async def mark_notification_read(
 
     if not notification.is_read:
         notification.is_read = True
+        notification.read_at = datetime.now(timezone.utc)
         await db.commit()
 
     return {
@@ -139,7 +158,7 @@ async def mark_all_notifications_read(
             Notification.user_id == user_id,
             Notification.is_read.is_(False),
         )
-        .values(is_read=True)
+        .values(is_read=True, read_at=datetime.now(timezone.utc))
     )
 
     await db.commit()

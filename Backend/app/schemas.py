@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
 
 class RegisterInput(BaseModel):
@@ -71,14 +71,20 @@ class JobInput(BaseModel):
     responsibilities: list[str] = Field(default_factory=list)
     requirements: list[str] = Field(default_factory=list)
     location: str = Field(min_length=2, max_length=160)
-    experience_min: int = Field(default=0, ge=0, le=60)
-    experience_max: int = Field(default=0, ge=0, le=60)
+    experience_requirement: str | None = Field(default=None, max_length=120)
     job_type: str = "Full-time"
-    salary_min: int | None = Field(default=None, ge=0)
-    salary_max: int | None = Field(default=None, ge=0)
+    expected_salary: str | None = Field(default=None, max_length=160)
     required_skills: list[str] = Field(default_factory=list, max_length=100)
     application_deadline: datetime | None = None
     status: Literal["draft", "published", "closed"] = "draft"
+
+    @field_validator("experience_requirement", "expected_salary", mode="before")
+    @classmethod
+    def normalize_optional_job_text(cls, value):
+        if value is None:
+            return None
+        cleaned = str(value).strip()
+        return cleaned or None
 
 
 class ApplicationStatusInput(BaseModel):

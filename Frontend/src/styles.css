@@ -726,3 +726,23 @@ body { background-image: radial-gradient(ellipse at 6% 3%, color-mix(in srgb, va
 .recording-progress { height: 8px; overflow: hidden; border-radius: 8px; background: var(--surface-2); }
 .recording-progress i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--accent), var(--accent-highlight)); transition: width .2s ease; }
 .round1-recording-player { display: block; width: 100%; max-width: 900px; max-height: 70vh; border-radius: 12px; background: #111; }
+
+
+.proctoring-screen-source { position: fixed; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.proctoring-evidence-panel { display: grid; gap: 12px; margin-top: 18px; }
+.proctoring-evidence-panel h2, .proctoring-evidence-panel h3, .proctoring-evidence-panel p { margin: 0; }
+.proctoring-risk-badge { color: var(--error); font-size: .72em; font-weight: 800; }
+.proctoring-risk-summary { color: var(--error); font-weight: 700; }
+.proctoring-candidate-high-risk { color: var(--error); font-weight: 850; }
+.proctoring-event-list { display: grid; gap: 8px; margin: 0; padding-left: 22px; }
+.proctoring-event-list li { padding: 9px 12px; border: 1px solid var(--border); border-radius: 9px; }
+.proctoring-event-list time, .proctoring-evidence-grid time { display: block; color: var(--muted); font-size: 11px; margin-bottom: 4px; }
+.proctoring-evidence-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.proctoring-evidence-grid figure { margin: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 11px; background: var(--surface); }
+.proctoring-evidence-grid img { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: contain; background: #16120f; }
+.proctoring-evidence-grid figcaption { display: grid; gap: 4px; padding: 10px; font-size: 12px; }
+.proctoring-evidence-placeholder { display: grid; place-items: center; min-height: 150px; color: var(--muted); font-size: 12px; }
+@media (max-width: 600px) { .proctoring-evidence-grid { grid-template-columns: 1fr; } }
+
+.recruiter-application-popover { border-color: color-mix(in srgb, var(--accent) 42%, var(--border)); }
+.recruiter-application-popover > a { flex: 1; align-items: flex-start; }
