@@ -550,6 +550,9 @@ class Interview(Base):
         String(40), default="scheduled", nullable=False
     )
 
+    room_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    room_ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     candidate_response: Mapped[str | None] = mapped_column(String(40))
     notes: Mapped[str | None] = mapped_column(Text)
 
@@ -958,6 +961,64 @@ class AssessmentRecording(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
     )
+
+
+class InterviewRoomEvent(Base):
+    __tablename__ = "interview_room_events"
+    __table_args__ = (Index("ix_interview_room_events_interview_time", "interview_id", "occurred_at"),)
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    interview_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("interviews.id", ondelete="CASCADE"), nullable=False)
+    actor_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    details: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class InterviewCodingProblem(Base):
+    __tablename__ = "interview_coding_problems"
+    __table_args__ = (Index("ix_interview_coding_problem_interview", "interview_id"),)
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    interview_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("interviews.id", ondelete="CASCADE"), nullable=False)
+    created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    allowed_languages: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    time_limit_seconds: Mapped[int] = mapped_column(Integer, default=1800, nullable=False)
+    test_cases: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class InterviewCodeSubmission(Base):
+    __tablename__ = "interview_code_submissions"
+    __table_args__ = (Index("ix_interview_code_submissions_interview_time", "interview_id", "created_at"),)
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    interview_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("interviews.id", ondelete="CASCADE"), nullable=False)
+    problem_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("interview_coding_problems.id", ondelete="CASCADE"), nullable=False)
+    candidate_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    language: Mapped[str] = mapped_column(String(40), nullable=False)
+    source_code: Mapped[str] = mapped_column(Text, nullable=False)
+    result: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    is_final: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class InterviewFeedback(Base):
+    __tablename__ = "interview_feedback"
+    __table_args__ = (UniqueConstraint("interview_id", name="uq_interview_feedback_interview"),)
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    interview_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("interviews.id", ondelete="CASCADE"), nullable=False)
+    recruiter_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    rating: Mapped[int] = mapped_column(Integer, nullable=False)
+    strengths: Mapped[str | None] = mapped_column(Text)
+    improvement_areas: Mapped[str | None] = mapped_column(Text)
+    private_notes: Mapped[str | None] = mapped_column(Text)
+    recommendation: Mapped[str] = mapped_column(String(30), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
 
 
 class ProctoringEvent(Base):

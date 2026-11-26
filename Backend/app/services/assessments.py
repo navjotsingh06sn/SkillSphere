@@ -998,6 +998,58 @@ async def create_assessment_draft(
     for item in selected:
         item["marks"] = marks_per_question
 
+    generated_bank_rows = []
+    if generated_questions is not None:
+        # Persist generated questions in this recruiter's existing bank and
+        # link the assessment snapshots to those rows. Reuse exact question
+        # matches within the same role and technology to avoid duplicates.
+        bank_technology = str(technology or "General").strip()[:100] or "General"
+        bank_role = str(job.title or "General role").strip()[:150] or "General role"
+        existing_bank = (
+            await database.scalars(
+                select(QuestionBankQuestion).where(
+                    QuestionBankQuestion.recruiter_id == recruiter_uuid,
+                    QuestionBankQuestion.technology == bank_technology,
+                    QuestionBankQuestion.role == bank_role,
+                    QuestionBankQuestion.is_active.is_(True),
+                )
+            )
+        ).all()
+
+        def bank_signature(prompt, options, correct_option, difficulty):
+            normalized_prompt = " ".join((prompt or "").casefold().split())
+            normalized_options = tuple(" ".join(str(option).casefold().split()) for option in options or [])
+            return normalized_prompt, normalized_options, str(correct_option).upper(), difficulty
+
+        bank_by_signature = {
+            bank_signature(row.question, row.options, row.correct_option, row.difficulty): row
+            for row in existing_bank
+        }
+
+        for item in selected:
+            correct_option = chr(65 + int(item["correct_index"]))
+            signature = bank_signature(item["prompt"], item["options"], correct_option, item["difficulty"])
+            bank_question = bank_by_signature.get(signature)
+            if bank_question is None:
+                bank_question = QuestionBankQuestion(
+                    id=uuid4(),
+                    recruiter_id=recruiter_uuid,
+                    technology=bank_technology,
+                    role=bank_role,
+                    category=str(item.get("category") or "AI generated").strip()[:150] or "AI generated",
+                    topic=str(item.get("topic") or topic or "General").strip()[:150] or "General",
+                    difficulty=item["difficulty"],
+                    question=item["prompt"],
+                    options=list(item["options"]),
+                    correct_option=correct_option,
+                    explanation=item.get("explanation") or None,
+                    marks=marks_per_question,
+                    is_active=True,
+                )
+                generated_bank_rows.append(bank_question)
+                bank_by_signature[signature] = bank_question
+            item["bank_id"] = bank_question.id
+
     questions, answer_key = _build_assessment_snapshot(selected, marks_per_question)
     total_marks = sum(float(q["marks"]) for q in questions)
 
@@ -1041,6 +1093,9 @@ async def create_assessment_draft(
     )
 
     try:
+        if generated_bank_rows:
+            database.add_all(generated_bank_rows)
+            await database.flush()
         database.add(model)
         database.add_all(question_rows)
         await database.flush()

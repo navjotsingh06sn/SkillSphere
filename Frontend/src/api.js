@@ -1,7 +1,15 @@
-const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000/api";
+const configuredApiUrl = (import.meta.env.VITE_API_URL || "").trim().replace(/\/+$/, "");
+const API_URL = configuredApiUrl || (import.meta.env.DEV ? "http://127.0.0.1:8013/api" : "");
+
+function getApiUrl() {
+  if (!API_URL) {
+    throw new Error("SkillSphere's API address is not configured. Please contact the administrator.");
+  }
+  return API_URL;
+}
 
 function formatErrorDetail(detail) {
-  if (typeof detail === "string" && detail.trim()) return detail;
+  if (typeof detail === "string" && detail.trim()) return cleanErrorMessage(detail);
   if (Array.isArray(detail)) {
     const messages = detail.map(item => {
       if (typeof item === "string") return item;
@@ -9,15 +17,36 @@ function formatErrorDetail(detail) {
       const location = Array.isArray(item.loc)
         ? item.loc.filter(part => part !== "body").join(".")
         : "";
-      return location ? `${location}: ${item.msg}` : item.msg;
+      const message = cleanErrorMessage(item.msg);
+      return location ? `${location}: ${message}` : message;
     }).filter(Boolean);
     if (messages.length) return messages.join(" ");
   }
   if (detail && typeof detail === "object") {
-    if (typeof detail.message === "string") return detail.message;
-    if (typeof detail.msg === "string") return detail.msg;
+    if (typeof detail.message === "string") return cleanErrorMessage(detail.message);
+    if (typeof detail.msg === "string") return cleanErrorMessage(detail.msg);
   }
   return "The request could not be completed.";
+}
+
+function cleanErrorMessage(message) {
+  return String(message)
+    .replace(/\s*\(HTTP\s+\d{3}\)/gi, "")
+    .replace(/\bHTTP\s+\d{3}\b:?\s*/gi, "")
+    .trim();
+}
+
+function responseErrorMessage(status, data) {
+  if (status >= 500) {
+    if (status === 503) return "This service is temporarily unavailable. Please try again in a moment.";
+    if (status === 504) return "The request took too long. Please try again.";
+    return "Something went wrong on our side. Please try again shortly.";
+  }
+  const detail = formatErrorDetail(data?.detail);
+  if (/^internal server error$/i.test(detail) || detail === "The request could not be completed.") {
+    return "We couldn't complete that request. Please try again.";
+  }
+  return detail;
 }
 
 export async function api(path, options = {}) {
@@ -29,20 +58,17 @@ export async function api(path, options = {}) {
   }
   let response;
   try {
-    response = await fetch(API_URL + path, { ...options, headers });
+    response = await fetch(getApiUrl() + path, { ...options, headers });
   } catch (error) {
     if (error instanceof TypeError) {
-      throw new Error(`Cannot connect to the SkillSphere server at ${API_URL}. Check that the backend is running and try again.`);
+      throw new Error("We couldn't connect to SkillSphere. Check your connection and try again.");
     }
     throw error;
   }
   if (response.status === 204) return null;
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const detail = formatErrorDetail(data.detail);
-    throw new Error(detail === "The request could not be completed."
-      ? `The server could not complete this request (HTTP ${response.status}).`
-      : `${detail} (HTTP ${response.status})`);
+    throw new Error(responseErrorMessage(response.status, data));
   }
   return data;
 }
@@ -56,14 +82,14 @@ export async function apiBlob(path) {
   const token = localStorage.getItem("skillsphere-token");
   if (token) headers.set("Authorization", "Bearer " + token);
   let response;
-  try { response = await fetch(API_URL + path, { headers }); }
+  try { response = await fetch(getApiUrl() + path, { headers }); }
   catch (error) {
-    if (error instanceof TypeError) throw new Error(`Cannot connect to the SkillSphere server at ${API_URL}. Check that the backend is running and try again.`);
+    if (error instanceof TypeError) throw new Error("We couldn't connect to SkillSphere. Check your connection and try again.");
     throw error;
   }
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
-    throw new Error(formatErrorDetail(data.detail));
+    throw new Error(responseErrorMessage(response.status, data));
   }
   return response.blob();
 }

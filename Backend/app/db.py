@@ -61,6 +61,7 @@ class Base(DeclarativeBase):
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,
+    hide_parameters=True,
     pool_pre_ping=True,
     pool_recycle=1800,
     poolclass=NullPool if IS_POOLED_DATABASE_URL else None,

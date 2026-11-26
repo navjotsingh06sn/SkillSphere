@@ -2,7 +2,7 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
-const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000/api";
+const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:8013/api";
 
 async function request(path, options = {}) {
   const token = localStorage.getItem("skillsphere-token");
@@ -215,7 +215,7 @@ export default function RecruiterAssessments({ questionBankOnly = false }) {
       setGeneratedQuestions(questions);
       setGeneratedDraftId(data.assessment?.id || "");
       setForm(current => ({ ...current, title }));
-      setNotice(`${questions.length} fresh AI-generated questions were saved directly to a new draft. They were not selected from your question bank.`);
+      setNotice(`${questions.length} AI-generated questions were saved to the assessment draft and your question bank.`);
       await loadData();
     } catch (err) { setError(err.message); }
     finally { setGenerating(false); }
@@ -370,7 +370,7 @@ export default function RecruiterAssessments({ questionBankOnly = false }) {
             {generating ? "Generating and saving draft…" : "Generate questions with AI"}
           </button>
           {!form.job_id && <small>Select a job to generate questions from its description and skills.</small>}
-          {generatedQuestions.length > 0 && <div className="assessment-ai-preview" aria-live="polite"><strong>New AI-generated questions ({generatedQuestions.length})</strong><small>Saved directly to draft; no question-bank matching was used.</small>{generatedQuestions.map((question, index) => <article key={question.id || index}><b>{index + 1}. {question.question}</b><small>{question.difficulty} · Correct answer: {question.correct_option}. {question.options[question.correct_option.charCodeAt(0) - 65]}</small></article>)}</div>}
+          {generatedQuestions.length > 0 && <div className="assessment-ai-preview" aria-live="polite"><strong>AI-generated questions ({generatedQuestions.length})</strong><small>Saved to this assessment draft and the recruiter question bank.</small>{generatedQuestions.map((question, index) => <article key={question.id || index}><b>{index + 1}. {question.question}</b><small>{question.difficulty} · Correct answer: {question.correct_option}. {question.options[question.correct_option.charCodeAt(0) - 65]}</small></article>)}</div>}
 
           <div className="assessment-grid">
             <div>

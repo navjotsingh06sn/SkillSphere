@@ -49,6 +49,15 @@ class Settings(BaseSettings):
     chatbot_ai_model: str = ""
     chatbot_ai_timeout_seconds: int = 30
 
+    # Interview code always runs in an isolated Judge0-compatible service.
+    judge0_api_url: str = ""
+    judge0_api_key: str = ""
+    judge0_language_ids: str = '{"python":71,"javascript":63,"cpp":54,"java":62,"go":60}'
+    interview_room_ticket_seconds: int = 90
+    interview_stun_urls: str = "stun:stun.l.google.com:19302"
+    interview_turn_urls: str = ""
+    interview_turn_shared_secret: str = ""
+
     model_config = SettingsConfigDict(
         env_file=(BACKEND_DIRECTORY / ".env", PROJECT_DIRECTORY / ".env.local"),
         env_file_encoding="utf-8",

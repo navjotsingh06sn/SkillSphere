@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.dependencies import (
     candidate_required,
     get_current_user,
@@ -33,6 +34,23 @@ router = APIRouter(prefix="/interviews", tags=["interviews"])
 logger = logging.getLogger("uvicorn.error")
 
 
+def interview_room_url(interview_id: UUID) -> str:
+    return (
+        f"{settings.frontend_url.rstrip('/')}/candidate/interviews/"
+        f"{interview_id}/room"
+    )
+
+
+def validate_interview_eligibility(application: Application) -> None:
+    # Selection is the recruiter decision that unlocks interview scheduling.
+    # Assessment screening is optional and must not block this workflow.
+    if application.status not in ("selected", "shortlisted"):
+        raise HTTPException(
+            status_code=409,
+            detail="Select the candidate before scheduling an interview.",
+        )
+
+
 def validate_future_datetime(value: datetime):
     if value.tzinfo is None or value.utcoffset() is None:
         raise HTTPException(
@@ -52,6 +70,8 @@ def format_interview_doc(interview: Interview | None) -> dict:
         return {}
 
     doc = serialize_model(interview)
+    # Legacy links remain stored for migration safety, but rooms never redirect externally.
+    doc.pop("meeting_link", None)
     extra = interview.extra_data or {}
 
     for key, value in extra.items():
@@ -139,13 +159,13 @@ async def deliver_interview_email(
             "cancelled": "Interview cancelled",
         }
         title = event_titles[event]
-        mode = (extra.get("mode") or "online").casefold()
+        mode = (extra.get("mode") or "in_platform").casefold()
         details = (
-            f"Meeting link: {interview.meeting_link}"
-            if mode == "online" and interview.meeting_link
-            else f"Location: {interview.location}"
-            if interview.location
-            else "Location or meeting link will be shared by the recruiter."
+            f"Location: {interview.location}"
+            if mode == "offline" and interview.location
+            else
+            f"Join your interview room in SkillSphere: "
+            f"{interview_room_url(interview.id)}"
         )
         notes = interview.notes or ""
         text_content = (
@@ -230,28 +250,7 @@ async def schedule_interview(
             detail="Application was not found.",
         )
 
-    if application.status not in (
-        "applied",
-        "shortlisted",
-        "under_review",
-        "selected",
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail="Only accepted or shortlisted applications can be scheduled for an interview.",
-        )
-
-    if (
-        application.screening_status not in (
-            "shortlisted",
-            "pending_review",
-        )
-        and application.reconsideration_status != "requested"
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail="This application is not eligible for interview scheduling.",
-        )
+    validate_interview_eligibility(application)
 
     if data.mode == "offline" and not data.location:
         raise HTTPException(
@@ -294,7 +293,7 @@ async def schedule_interview(
         interview_type=data.interview_type,
         scheduled_at=data.scheduled_at,
         location=data.location,
-        meeting_link=data.meeting_link,
+        meeting_link=data.meeting_link if data.mode == "online" else None,
         status="scheduled",
         candidate_response="pending",
         notes=data.notes,

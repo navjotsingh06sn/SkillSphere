@@ -1,6 +1,7 @@
 import asyncio
 import smtplib
 import ssl
+import time
 from email.message import EmailMessage
 from email.utils import formataddr, make_msgid
 
@@ -41,26 +42,56 @@ def send_smtp_email_sync(
         message.add_alternative(html_content, subtype="html")
 
     context = ssl.create_default_context()
-    try:
-        if settings.smtp_port == 465:
-            connection = smtplib.SMTP_SSL(
-                host,
-                settings.smtp_port,
-                timeout=15,
-                context=context,
-            )
-        else:
-            connection = smtplib.SMTP(host, settings.smtp_port, timeout=15)
-
-        with connection as server:
-            if settings.smtp_port != 465:
+    server = None
+    for attempt in range(2):
+        try:
+            if settings.smtp_port == 465:
+                server = smtplib.SMTP_SSL(
+                    host,
+                    settings.smtp_port,
+                    timeout=20,
+                    context=context,
+                )
+            else:
+                server = smtplib.SMTP(host, settings.smtp_port, timeout=20)
                 server.ehlo()
                 server.starttls(context=context)
                 server.ehlo()
             if settings.smtp_username:
-                server.login(settings.smtp_username, password)
-            server.send_message(message)
+                server.login(settings.smtp_username.strip(), password)
+            break
+        except (OSError, ssl.SSLError, smtplib.SMTPServerDisconnected) as exc:
+            if server is not None:
+                try:
+                    server.close()
+                except Exception:
+                    pass
+                server = None
+            if attempt == 1:
+                raise EmailDeliveryError(
+                    "SMTP server could not be reached after one retry. "
+                    "Check backend internet access, firewall/VPN rules, and the configured SMTP host and port."
+                ) from exc
+            time.sleep(1)
+        except Exception as exc:
+            if server is not None:
+                try:
+                    server.close()
+                except Exception:
+                    pass
+            raise EmailDeliveryError(f"SMTP connection or authentication failed: {str(exc)[:500]}") from exc
+
+    try:
+        # Do not retry send_message: if the remote server accepted a message
+        # before a connection failure, resending could deliver a duplicate.
+        server.send_message(message)
+        server.close()
     except Exception as exc:
+        if server is not None:
+            try:
+                server.close()
+            except Exception:
+                pass
         raise EmailDeliveryError(f"SMTP delivery failed: {str(exc)[:500]}") from exc
 
     return message["Message-ID"]

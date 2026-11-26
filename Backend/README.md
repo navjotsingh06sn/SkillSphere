@@ -20,9 +20,17 @@ Edit .env before starting:
 Then run:
 
     pip install -r requirements.txt
-    uvicorn app.main:app --reload
+    uvicorn app.main:app --reload --port 8013
 
-The API is at http://127.0.0.1:8000 and Swagger docs are at http://127.0.0.1:8000/docs.
+The local API is at http://127.0.0.1:8013 and Swagger docs are at http://127.0.0.1:8013/docs.
+
+## In-platform interviews and live coding
+
+Apply migrations with `alembic upgrade head`. Newly scheduled online interviews default to the built-in SkillSphere room. The room uses browser WebRTC for one recruiter and one candidate; camera and microphone streams are not recorded. Candidates see a plain-language notice and must consent before joining. Tab/window focus, fullscreen exits, and code-editor copy/paste attempts are timestamped review signals, not proof of misconduct.
+
+For live code execution, configure `JUDGE0_API_URL` to a trusted, isolated Judge0 CE deployment and optionally set `JUDGE0_API_KEY` (the server sends it only in the backend-to-runner request). `JUDGE0_LANGUAGE_IDS` maps enabled language names to IDs installed by that runner. The API enforces CPU, memory, wall-time, source-size, and test-count limits. Without Judge0 configured, interview/video still work and code execution returns an unavailable message. Never point this setting at an untrusted runner.
+
+WebRTC peer-to-peer calls can fail across restrictive NATs. For production availability, deploy TURN (for example, coturn) and provide short-lived TURN credentials to the browser through an authenticated credential endpoint; do not place a TURN shared secret in `VITE_*` variables. The current room signaling hub is process-local, so run one API worker for rooms until the hub is moved to Redis/pub-sub. A self-hosted TURN service and Judge0 runner are infrastructure requirements, not bundled with SkillSphere.
 
 Interview invitations and shortlist notifications use SMTP. If SMTP is unavailable or rejects a message, the database change remains saved and its email status and failure reason are tracked; only failed messages can be retried from the relevant recruiter view.
 
@@ -53,7 +61,7 @@ Start FastAPI in that activated environment:
 
     uvicorn app.main:app --reload
 
-To try the API, open http://127.0.0.1:8000/docs, authorize with a candidate account, and submit a PDF, PNG, JPG, or JPEG to `POST /api/ocr/extract`. The first OCR request may download the model weights; selectable-text PDFs do not need to initialize the OCR models.
+To try the API, open http://127.0.0.1:8013/docs, authorize with a candidate account, and submit a PDF, PNG, JPG, or JPEG to `POST /api/ocr/extract`. The first OCR request may download the model weights; selectable-text PDFs do not need to initialize the OCR models.
 
 To try it from the frontend, sign in as a candidate, open **My resume** at `/candidate/resume`, and use the **Quick OCR** panel. This extracts text for review without adding a file to resume history; the existing **Upload a resume** form still uses the saved-resume workflow.
 

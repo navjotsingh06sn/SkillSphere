@@ -113,7 +113,7 @@ class InterviewScheduleInput(BaseModel):
     scheduled_at: datetime
     duration_minutes: int = Field(default=30, ge=15, le=240)
 
-    mode: Literal["online", "offline"] = "online"
+    mode: Literal["in_platform", "offline"] = "in_platform"
     meeting_link: str | None = Field(default=None, max_length=1000)
     location: str | None = Field(default=None, max_length=500)
     notes: str | None = Field(default=None, max_length=2000)
@@ -122,7 +122,7 @@ class InterviewScheduleInput(BaseModel):
 class InterviewRescheduleInput(BaseModel):
     scheduled_at: datetime
     duration_minutes: int = Field(default=30, ge=15, le=240)
-    mode: Literal["online", "offline"] | None = None
+    mode: Literal["in_platform", "offline"] | None = None
     meeting_link: str | None = Field(default=None, max_length=1000)
     location: str | None = Field(default=None, max_length=500)
     notes: str | None = Field(default=None, max_length=2000)

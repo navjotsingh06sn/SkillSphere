@@ -746,3 +746,65 @@ body { background-image: radial-gradient(ellipse at 6% 3%, color-mix(in srgb, va
 
 .recruiter-application-popover { border-color: color-mix(in srgb, var(--accent) 42%, var(--border)); }
 .recruiter-application-popover > a { flex: 1; align-items: flex-start; }
+
+.interview-room-page { min-height: calc(100vh - 40px); padding: 0 0 32px; }
+.interview-room-topbar { position: sticky; top: 0; z-index: 8; display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: -18px -18px 18px; padding: 13px 22px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.interview-room-topbar > a, .interview-room-topbar > div { display: flex; align-items: center; gap: 9px; color: var(--text); text-decoration: none; }
+.interview-room-topbar > div { flex: 1; justify-content: center; flex-wrap: wrap; }
+.interview-room-topbar small { color: var(--muted); text-transform: capitalize; }
+.room-clock { min-width: 82px; text-align: right; font-variant-numeric: tabular-nums; font-weight: 800; }
+.room-live-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+.room-live-dot.room-live { background: #31a46c; box-shadow: 0 0 0 4px color-mix(in srgb, #31a46c 18%, transparent); }
+.interview-room-main { width: min(1500px, 100%); margin: auto; padding: 0 16px; }
+.interview-room-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 290px); gap: 15px; align-items: start; }
+.room-media-panel, .room-participants-panel, .room-coding-panel, .room-events-panel, .room-feedback-form { min-width: 0; }
+.room-video-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.room-video-tile { position: relative; overflow: hidden; min-height: 230px; border-radius: 12px; background: #171411; }
+.room-video-tile video { display: block; width: 100%; height: 100%; min-height: 230px; object-fit: cover; }
+.room-local-video video { transform: scaleX(-1); }
+.room-video-tile > span { position: absolute; bottom: 10px; left: 10px; border-radius: 20px; padding: 5px 9px; background: #0009; color: white; font-size: 12px; }
+.room-controls { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px; padding: 14px 0 0; }
+.room-controls button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 40px; border: 1px solid var(--border); border-radius: 10px; padding: 0 12px; background: var(--surface); color: var(--text); cursor: pointer; }
+.room-controls button svg { width: 16px; height: 16px; }
+.room-controls button:disabled { opacity: .5; cursor: not-allowed; }
+.room-controls .room-leave-control { margin-left: 10px; }
+.room-controls .room-end-control { border-color: var(--error); color: var(--error); }
+.room-join-box { display: grid; gap: 12px; max-width: 680px; margin: 20px auto 2px; }
+.room-consent { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--border); border-radius: 10px; padding: 12px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.room-consent input { margin-top: 3px; accent-color: var(--accent); }
+.room-join-box > .button { justify-self: center; }
+.room-error { color: var(--error); font-size: 12px; }
+.room-participants-panel h3 { margin: 8px 0 14px; }
+.room-participant { display: flex; align-items: center; gap: 10px; border-top: 1px solid var(--border); padding: 12px 0; }
+.room-participant > span:nth-child(2) { display: grid; gap: 3px; flex: 1; }
+.room-participant small, .room-monitor-note { color: var(--muted); font-size: 11px; }
+.room-avatar { display: grid; width: 36px; height: 36px; place-items: center; border-radius: 50%; background: color-mix(in srgb, var(--accent) 22%, var(--surface)); color: var(--accent); font-weight: 800; }
+.room-monitor-note { display: block; margin-top: 12px; line-height: 1.5; }
+.room-section-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.room-section-heading .eyebrow { display: flex; align-items: center; gap: 6px; }
+.room-section-heading h2 { margin: 5px 0 0; }
+.room-code-timer { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-variant-numeric: tabular-nums; font-weight: 800; }
+.room-coding-panel { margin-top: 16px; }
+.room-problem-prompt { white-space: pre-wrap; line-height: 1.65; }
+.room-code-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin: 12px 0; color: var(--muted); }
+.room-code-toolbar label { display: flex; align-items: center; gap: 8px; }
+.room-editor { overflow: hidden; border: 1px solid var(--border); border-radius: 10px; }
+.room-code-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.room-code-actions button { display: inline-flex; align-items: center; gap: 7px; }
+.room-run-result { display: grid; gap: 8px; margin-top: 14px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; }
+.room-test-pass, .room-test-fail { display: grid; gap: 5px; border-top: 1px solid var(--border); padding: 8px 0; font-size: 12px; }
+.room-test-pass > span { color: #218657; }.room-test-fail > span { color: var(--error); }
+.room-run-result pre { max-height: 150px; overflow: auto; margin: 0; white-space: pre-wrap; }
+.room-recruiter-tools { display: grid; }
+.room-problem-choice, .room-submission-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.room-problem-choice > span, .room-submission-row > span, .room-submission-row > time { color: var(--muted); font-size: 12px; }
+.room-problem-choice > button { margin-left: auto; }
+.room-problem-form { display: grid; gap: 12px; margin: 16px 0; }
+.room-event-list { display: grid; gap: 7px; margin: 0; padding-left: 22px; }
+.room-event-list li { display: grid; grid-template-columns: minmax(110px, auto) 1fr; gap: 8px; border-bottom: 1px solid var(--border); padding: 9px 0; font-size: 12px; }
+.room-event-list time { color: var(--muted); }
+.room-feedback-form { margin-top: 16px; }
+.room-candidate-feedback { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 12px; }
+.room-toast { position: fixed; right: 20px; bottom: 20px; z-index: 20; max-width: min(460px, calc(100vw - 40px)); border: 1px solid var(--border); border-radius: 10px; padding: 12px 15px; background: var(--surface); box-shadow: 0 10px 35px #0002; font-size: 13px; }
+@media (max-width: 850px) { .interview-room-columns { grid-template-columns: 1fr; } .room-participants-panel { order: -1; } }
+@media (max-width: 600px) { .interview-room-page { padding-bottom: 20px; }.interview-room-topbar { margin: -12px -12px 12px; padding: 11px 12px; }.interview-room-main { padding: 0 8px; }.room-video-grid { grid-template-columns: 1fr; }.room-video-tile, .room-video-tile video { min-height: 190px; }.room-clock { min-width: auto; }.room-controls { gap: 6px; }.room-controls button { padding: 0 9px; }.room-controls .room-leave-control { margin-left: 0; }.room-event-list li { grid-template-columns: 1fr; } }

@@ -162,15 +162,33 @@ async def login(
 ):
     email = data.email.strip().lower()
 
-    result = await db.execute(
-        select(User).where(User.email == email)
-    )
+    try:
+        result = await db.execute(
+            select(User).where(User.email == email)
+        )
+    except Exception as error:
+        # Never log the submitted email or password. The traceback is for
+        # backend diagnostics; the client receives a safe service message.
+        logger.exception("Login account lookup failed (%s).", type(error).__name__)
+        raise HTTPException(
+            status_code=503,
+            detail="Login is temporarily unavailable. Please try again shortly.",
+        ) from error
+
     user = result.scalar_one_or_none()
 
-    if not user or not verify_password(
-        data.password,
-        user.password_hash,
-    ):
+    try:
+        password_matches = bool(
+            user and verify_password(data.password, user.password_hash)
+        )
+    except Exception as error:
+        logger.exception("Login password verification failed (%s).", type(error).__name__)
+        raise HTTPException(
+            status_code=500,
+            detail="Login could not be completed. Please try again shortly.",
+        ) from error
+
+    if not password_matches:
         raise HTTPException(
             status_code=401,
             detail="Email or password is incorrect.",
@@ -182,15 +200,23 @@ async def login(
             detail="This account has been disabled.",
         )
 
-    public_user = get_public_user(user)
-
-    return {
-        "user": public_user,
-        "access_token": create_access_token(
+    try:
+        public_user = get_public_user(user)
+        access_token = create_access_token(
             str(user.id),
             user.role,
             user.token_version,
-        ),
+        )
+    except Exception as error:
+        logger.exception("Login session creation failed (%s).", type(error).__name__)
+        raise HTTPException(
+            status_code=500,
+            detail="Login could not be completed. Please try again shortly.",
+        ) from error
+
+    return {
+        "user": public_user,
+        "access_token": access_token,
         "token_type": "bearer",
     }
 

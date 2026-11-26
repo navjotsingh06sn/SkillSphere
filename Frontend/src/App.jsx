@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import React, { createContext, lazy, Suspense, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { ArrowDownRight, ArrowRight, Bell, BriefcaseBusiness, Building2, CalendarDays, Check, ChevronDown, CircleUserRound, Eye, EyeOff, FileText, LayoutDashboard, LockKeyhole, LogOut, Menu, Moon, Palette, Search, ShieldCheck, Sparkles, Sun, Trash2, Users, Volume2, VolumeX, X, UploadCloud } from "lucide-react";
 import { Link, NavLink, Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, apiBlob, json } from "./api.js";
@@ -8,6 +8,8 @@ import { clearRound1Draft, loadRound1Draft, saveRound1Final } from "./round1Reco
 import { uploadRound1Recording } from "./round1CloudinaryUpload.js";
 import AdminProctoring from "./AdminProctoring.jsx";
 import CandidateChatbot from "./CandidateChatbot.jsx";
+
+const InterviewRoom = lazy(() => import("./InterviewRoom.jsx"));
 
 function ProtectedEvidenceImage({ path, alt }) {
   const [src, setSrc] = useState("");
@@ -674,7 +676,7 @@ function ApplicantsPage() {
 
   async function download(resumeId) {
     try {
-      const response = await fetch((import.meta.env.VITE_API_URL || "http://127.0.0.1:8000/api") + "/resumes/" + resumeId + "/download", {
+      const response = await fetch((import.meta.env.VITE_API_URL || "http://127.0.0.1:8013/api") + "/resumes/" + resumeId + "/download", {
         headers: { Authorization: "Bearer " + localStorage.getItem("skillsphere-token") },
       });
       if (!response.ok) throw new Error("Resume could not be opened.");
@@ -720,7 +722,7 @@ function ApplicantDetailPage() {
     scheduled_at: "",
     duration_minutes: "30",
     interview_type: "technical",
-    mode: "online",
+    mode: "in_platform",
     meeting_link: "",
     location: "",
     notes: "",
@@ -827,7 +829,7 @@ function ApplicantDetailPage() {
   async function downloadResume() {
     if (!application?.resume?.id) return;
     try {
-      const response = await fetch((import.meta.env.VITE_API_URL || "http://127.0.0.1:8000/api") + "/resumes/" + application.resume.id + "/download", {
+      const response = await fetch((import.meta.env.VITE_API_URL || "http://127.0.0.1:8013/api") + "/resumes/" + application.resume.id + "/download", {
         headers: { Authorization: "Bearer " + localStorage.getItem("skillsphere-token") },
       });
       if (!response.ok) throw new Error("Resume could not be opened.");
@@ -882,8 +884,8 @@ function ApplicantDetailPage() {
         <label>Interview date and time<input required type="datetime-local" value={schedule.scheduled_at} onChange={event => setSchedule({ ...schedule, scheduled_at: event.target.value })} /></label>
         <label>Duration (minutes)<input required type="number" min="15" max="240" value={schedule.duration_minutes} onChange={event => setSchedule({ ...schedule, duration_minutes: event.target.value })} /></label>
         <label>Interview type<select value={schedule.interview_type} onChange={event => setSchedule({ ...schedule, interview_type: event.target.value })}><option value="technical">Technical</option><option value="hr">HR</option><option value="managerial">Managerial</option><option value="other">Other</option></select></label>
-        <label>Mode<select value={schedule.mode} onChange={event => setSchedule({ ...schedule, mode: event.target.value })}><option value="online">Online</option><option value="offline">Offline</option></select></label>
-        {schedule.mode === "online" ? <label className="wide-field">Meeting link<input required type="url" maxLength="1000" value={schedule.meeting_link} onChange={event => setSchedule({ ...schedule, meeting_link: event.target.value })} /></label> : <label className="wide-field">Location<input required maxLength="500" value={schedule.location} onChange={event => setSchedule({ ...schedule, location: event.target.value })} /></label>}
+        <label>Mode<select value={schedule.mode} onChange={event => setSchedule({ ...schedule, mode: event.target.value })}><option value="in_platform">SkillSphere live room</option><option value="offline">In person</option></select></label>
+        {schedule.mode === "offline" ? <label className="wide-field">Location<input required maxLength="500" value={schedule.location} onChange={event => setSchedule({ ...schedule, location: event.target.value })} /></label> : <p className="wide-field">Candidates will join from their SkillSphere dashboard. No outside meeting service is used.</p>}
         <label className="wide-field">Additional instructions or notes<textarea maxLength="2000" rows="3" value={schedule.notes} onChange={event => setSchedule({ ...schedule, notes: event.target.value })} /></label>
       </div><button className="button button-primary" disabled={busy}>Schedule interview</button></form>}
     </section>
@@ -896,7 +898,7 @@ function InterviewManagementPage() {
   const [items, setItems] = useState([]);
   const [error, setError] = useState("");
   const [reschedulingId, setReschedulingId] = useState("");
-  const [form, setForm] = useState({ scheduled_at: "", duration_minutes: "30", mode: "online", meeting_link: "", location: "", notes: "" });
+  const [form, setForm] = useState({ scheduled_at: "", duration_minutes: "30", mode: "in_platform", meeting_link: "", location: "", notes: "" });
 
   async function load() {
     try {
@@ -923,8 +925,8 @@ function InterviewManagementPage() {
     setForm({
       scheduled_at: date.toISOString().slice(0, 16),
       duration_minutes: String(interview.duration_minutes),
-      mode: interview.mode,
-      meeting_link: interview.meeting_link || "",
+      mode: interview.mode === "offline" ? "offline" : "in_platform",
+      meeting_link: "",
       location: interview.location || "",
       notes: interview.notes || "",
     });
@@ -976,7 +978,7 @@ function InterviewManagementPage() {
     {items.length ? <div className="interview-list">{items.map(interview => <section className="panel interview-card" key={interview.id}>
       <div className="panel-heading"><div><span className="eyebrow">{interview.interview_type} · {interview.mode}</span><h3>{interview.job?.title || "Interview"}</h3></div><span className={"status status-" + interview.status}>{interview.status}</span></div>
       <p><b>{new Date(interview.scheduled_at).toLocaleString()}</b> · {interview.duration_minutes} minutes</p>
-      {interview.meeting_link && <p><a href={interview.meeting_link} target="_blank" rel="noreferrer">Open meeting link</a></p>}
+      {interview.mode === "in_platform" && <Link className="button button-primary" to={`${isRecruiter ? "/recruiter" : "/candidate"}/interviews/${interview.id}/room`}>{interview.status === "completed" ? "View interview report" : isRecruiter && interview.status === "scheduled" ? "Open and start SkillSphere room" : "Join SkillSphere room"}</Link>}
       {interview.location && <p>Location: {interview.location}</p>}
       {interview.notes && <p>{interview.notes}</p>}
       {isRecruiter && <p>Email delivery: <b>{interview.email_status || "pending"}</b>{interview.email_attempts ? ` · ${interview.email_attempts} attempt(s)` : ""}</p>}
@@ -988,8 +990,8 @@ function InterviewManagementPage() {
       {isRecruiter && reschedulingId === interview.id && <form className="edit-form interview-form" onSubmit={event => reschedule(event, interview)}><div className="form-grid">
         <label>New date and time<input required type="datetime-local" value={form.scheduled_at} onChange={event => setForm({ ...form, scheduled_at: event.target.value })} /></label>
         <label>Duration (minutes)<input required type="number" min="15" max="240" value={form.duration_minutes} onChange={event => setForm({ ...form, duration_minutes: event.target.value })} /></label>
-        <label>Mode<select value={form.mode} onChange={event => setForm({ ...form, mode: event.target.value })}><option value="online">Online</option><option value="offline">Offline</option></select></label>
-        {form.mode === "online" ? <label className="wide-field">Meeting link<input required type="url" value={form.meeting_link} onChange={event => setForm({ ...form, meeting_link: event.target.value })} /></label> : <label className="wide-field">Location<input required value={form.location} onChange={event => setForm({ ...form, location: event.target.value })} /></label>}
+        <label>Mode<select value={form.mode} onChange={event => setForm({ ...form, mode: event.target.value })}><option value="in_platform">SkillSphere live room</option><option value="offline">In person</option></select></label>
+        {form.mode === "offline" ? <label className="wide-field">Location<input required value={form.location} onChange={event => setForm({ ...form, location: event.target.value })} /></label> : <p className="wide-field">The candidate joins directly from SkillSphere. No external meeting link is used.</p>}
         <label className="wide-field">Notes<textarea rows="3" value={form.notes} onChange={event => setForm({ ...form, notes: event.target.value })} /></label>
       </div><button className="button button-primary">Save reschedule</button><button type="button" className="button button-outline" onClick={() => setReschedulingId("")}>Keep current time</button></form>}
     </section>)}</div> : <section className="panel"><Empty title="No interviews scheduled" text="Interview invitations and scheduled details will appear here." /></section>}
@@ -1633,19 +1635,11 @@ function SettingsPage() {
   </div>;
 }
 function Protected({ roles, children }) {
-  const { user, ready, clearSession } = useAuth();
+  const { user, ready } = useAuth();
   const hasRoleAccess = !roles || roles.includes(user?.role);
   if (!ready) return <Loading />;
-  if (!user) return <Navigate to="/login" replace />;
-  if (!hasRoleAccess) return <ClearSessionRedirect clearSession={clearSession} />;
+  if (!user || !hasRoleAccess) return <Navigate to="/home" replace />;
   return children;
-}
-function ClearSessionRedirect({ clearSession }) {
-  useEffect(() => {
-    clearSession();
-    window.location.replace("/login");
-  }, [clearSession]);
-  return <Loading />;
 }
 function RoleHome() {
   const { user } = useAuth();
@@ -1701,7 +1695,9 @@ export default function App() {
     <Route path="/jobs" element={<><PublicNav /><main className="public-jobs section-wrap"><JobsPage /></main></>} /><Route path="/jobs/:jobId" element={<><PublicNav /><main className="public-jobs section-wrap"><JobDetailPage /></main></>} />
     <Route path="/dashboard" element={<Protected><RoleHome /></Protected>} />
     <Route path="/candidate" element={<Protected roles={["candidate"]}><CandidateDashboardLayout /></Protected>}><Route index element={<DashboardHome />} /><Route path="profile" element={<ProfilePage />} /><Route path="notifications" element={<NotificationsPage />} /><Route path="resume" element={<ResumePage />} /><Route path="jobs" element={<JobsPage />} /><Route path="saved" element={<SavedJobsPage />} /><Route path="applications" element={<ApplicationsPage />} /><Route path="applications/:applicationId" element={<CandidateApplicationDetailPage />} /><Route path="assessments" element={<AssessmentListPage audience="candidate" />} /><Route path="assessments/:assessmentId" element={<AssessmentDetailPage audience="candidate" />} /><Route path="interviews" element={<InterviewManagementPage />} /><Route path="analysis" element={<AnalysisPage />} /><Route path="settings" element={<SettingsPage />} /></Route>
+    <Route path="/candidate/interviews/:interviewId/room" element={<Protected roles={["candidate"]}><Suspense fallback={<div className="page-loading">Loading interview room…</div>}><InterviewRoom audience="candidate" /></Suspense></Protected>} />
     <Route path="/recruiter" element={<Protected roles={["recruiter"]}><DashboardLayout /></Protected>}><Route index element={<DashboardHome />} /><Route path="company" element={<CompanyPage />} /><Route path="notifications" element={<NotificationsPage />} /><Route path="jobs" element={<RecruiterJobsPage />} /><Route path="applicants" element={<ApplicantsPage />} /><Route path="applicants/:applicationId" element={<ApplicantDetailPage />} /><Route path="assessments" element={<RecruiterAssessments />} /><Route path="question-bank" element={<RecruiterAssessments questionBankOnly />} /><Route path="assessments/:assessmentId" element={<AssessmentDetailPage audience="recruiter" />} /><Route path="interviews" element={<InterviewManagementPage />} /><Route path="settings" element={<SettingsPage />} /></Route>
+    <Route path="/recruiter/interviews/:interviewId/room" element={<Protected roles={["recruiter"]}><Suspense fallback={<div className="page-loading">Loading interview room…</div>}><InterviewRoom audience="recruiter" /></Suspense></Protected>} />
     <Route path="/admin" element={<Protected roles={["admin"]}><DashboardLayout /></Protected>}><Route index element={<AdminPage />} /><Route path="notifications" element={<NotificationsPage />} /><Route path="users" element={<AdminPage mode="users" />} /><Route path="jobs" element={<AdminPage mode="jobs" />} /><Route path="companies" element={<AdminPage mode="companies" />} /><Route path="proctoring" element={<AdminProctoring />} /><Route path="settings" element={<SettingsPage />} /></Route>
     <Route path="*" element={<Navigate to="/home" replace />} />
   </Routes></AuthContext.Provider>;

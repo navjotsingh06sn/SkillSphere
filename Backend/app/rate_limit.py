@@ -23,13 +23,20 @@ class SensitiveRouteRateLimit(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         limit = self.limits.get(request.url.path)
+        is_interview_code_run = (
+            request.url.path.startswith("/api/interviews/")
+            and request.url.path.endswith("/run")
+        )
+        if request.method == "POST" and is_interview_code_run:
+            limit = (10, 60)
         if request.method != "POST" or limit is None:
             return await call_next(request)
 
         max_requests, window_seconds = limit
         now = monotonic()
         client_ip = request.client.host if request.client else "unknown"
-        key = (client_ip, request.url.path)
+        key_path = "interview_code_run" if is_interview_code_run else request.url.path
+        key = (client_ip, key_path)
         timestamps = self.requests[key]
         while timestamps and now - timestamps[0] >= window_seconds:
             timestamps.popleft()

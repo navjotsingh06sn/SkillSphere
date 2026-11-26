@@ -325,7 +325,7 @@ async def recruiter_dashboard(
         await db.scalar(
             select(func.count(Interview.id)).where(
                 Interview.recruiter_id == recruiter_uuid,
-                Interview.status == "scheduled",
+                Interview.status.in_(["scheduled", "in_progress"]),
             )
         )
     ) or 0

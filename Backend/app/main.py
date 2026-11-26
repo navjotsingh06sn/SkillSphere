@@ -20,6 +20,7 @@ from app.routers import (
     chatbot,
     health,
     interviews,
+    interview_live,
     jobs,
     matching,
     notifications,
@@ -68,6 +69,7 @@ app.include_router(candidates.router, prefix="/api")
 app.include_router(chatbot.router, prefix="/api")
 app.include_router(health.router, prefix="/api")
 app.include_router(interviews.router, prefix="/api")
+app.include_router(interview_live.router, prefix="/api")
 app.include_router(jobs.router, prefix="/api")
 app.include_router(matching.router, prefix="/api")
 app.include_router(notifications.router, prefix="/api")

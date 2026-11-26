@@ -25,9 +25,9 @@ Use Python 3.10 or newer.
     # Set DATABASE_URL to your PostgreSQL connection string
     # For an admin account, set ADMIN_EMAIL and ADMIN_PASSWORD
     pip install -r requirements.txt
-    uvicorn app.main:app --reload
+    uvicorn app.main:app --reload --port 8013
 
-The API is at http://127.0.0.1:8000; interactive API docs are at /docs. The backend can start while PostgreSQL is unavailable, but database workflows require a connection. /api/health/ready checks database readiness. Apply schema migrations with `alembic upgrade head`.
+The API is at http://127.0.0.1:8013; interactive API docs are at /docs. The backend can start while PostgreSQL is unavailable, but database workflows require a connection. /api/health/ready checks database readiness. Apply schema migrations with `alembic upgrade head`.
 
 ## Start the frontend
 
@@ -38,7 +38,9 @@ In a second terminal:
     npm install
     npm run dev
 
-Vite prints the local URL. The default API address is http://127.0.0.1:8000/api. To change it, update VITE_API_URL in Frontend/.env.local.
+Vite prints the local URL. The default API address is http://127.0.0.1:8013/api. To change it, update VITE_API_URL in Frontend/.env.local.
+
+For a Render static-site build, set `VITE_API_URL` in the frontend service to the deployed FastAPI service URL ending in `/api` (for example, `https://<backend-service>.onrender.com/api`). Vite embeds this value at build time, so rebuild the frontend after changing it. The repository does not contain a `render.yaml`; the Render dashboard environment values cannot be verified from source control. The production frontend now fails with a configuration message instead of silently calling `localhost` if this value is missing.
 
 ## Database and initial admin
 
