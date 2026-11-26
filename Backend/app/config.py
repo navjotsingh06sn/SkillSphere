@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     smtp_from_email: str = ""
 
     smtp_from_name: str = "SkillSphere"
+    resend_api_key: str = ""
+    resend_from_email: str = ""
 
     cloudinary_cloud_name: str = ""
     cloudinary_api_key: str = ""

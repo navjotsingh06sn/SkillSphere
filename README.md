@@ -52,6 +52,8 @@ The backend uses its existing FastAPI, SQLAlchemy async, and asyncpg stack. Neon
 
 The candidate chatbot uses `CHATBOT_AI_BASE_URL`, `CHATBOT_AI_API_KEY`, and `CHATBOT_AI_MODEL` when all three are configured. Otherwise it reuses the backend-only `ASSESSMENT_AI_*` provider settings. Keep API keys in `Backend/.env`; they are never sent to the browser. The chatbot sends the candidate’s name with each AI request and includes application details only for application-related questions.
 
+For local email delivery, configure the `SMTP_*` values in `Backend/.env`. Render Free blocks outbound SMTP ports 25, 465, and 587, so configure `RESEND_API_KEY` and a verified `RESEND_FROM_EMAIL` in the backend service environment to send through HTTPS. When the Resend key is set, it takes precedence over SMTP. Keep it in backend environment variables only.
+
 After provisioning the Neon branch, run `alembic upgrade head` from `Backend` (or activate the backend environment and run the same command), then start the API as usual.
 
 ## Demo job listings

@@ -73,6 +73,10 @@ With the API running, execute:
 
 See tests/TEST_RESULTS.md for the latest test results and any database limitations.
 
+## Email delivery
+
+Local development can continue using SMTP (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, and `SMTP_FROM_EMAIL`). Render Free blocks outbound SMTP ports 25, 465, and 587, so configure an HTTPS mail provider for that deployment. The backend supports Resend over HTTPS: set `RESEND_API_KEY` and `RESEND_FROM_EMAIL` to a sender address verified with Resend. When `RESEND_API_KEY` is present, interview and other existing email workflows use the HTTPS API instead of SMTP. Keep the API key only in backend environment variables; never put it in the frontend. Existing failed interview emails can then be retried from the recruiter dashboard.
+
 
 ### Proctoring evidence
 

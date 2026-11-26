@@ -1,15 +1,76 @@
 import asyncio
+import json
 import smtplib
 import ssl
 import time
 from email.message import EmailMessage
 from email.utils import formataddr, make_msgid
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from app.config import settings
 
 
 class EmailDeliveryError(RuntimeError):
     pass
+
+
+def send_resend_email_sync(
+    recipient: str,
+    subject: str,
+    text_content: str,
+    html_content: str | None = None,
+) -> str:
+    api_key = settings.resend_api_key.strip()
+    sender = settings.resend_from_email.strip() or settings.smtp_from_email.strip()
+    if not api_key:
+        raise EmailDeliveryError("RESEND_API_KEY is required for HTTPS email delivery.")
+    if not sender:
+        raise EmailDeliveryError(
+            "Set RESEND_FROM_EMAIL to a sender address verified with the email provider."
+        )
+    if not recipient.strip():
+        raise EmailDeliveryError("The recipient email address is empty.")
+
+    payload = {
+        "from": formataddr((settings.smtp_from_name.strip() or "SkillSphere", sender)),
+        "to": [recipient.strip()],
+        "subject": subject,
+        "text": text_content,
+    }
+    if html_content:
+        payload["html"] = html_content
+
+    request = Request(
+        "https://api.resend.com/emails",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=20) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        details = exc.read(2000).decode("utf-8", errors="replace")
+        raise EmailDeliveryError(
+            f"HTTPS email provider rejected the message (HTTP {exc.code}): {details[:500]}"
+        ) from exc
+    except (URLError, TimeoutError, OSError) as exc:
+        raise EmailDeliveryError(
+            "Could not reach the HTTPS email provider. Check backend internet access."
+        ) from exc
+    except (UnicodeDecodeError, json.JSONDecodeError, KeyError) as exc:
+        raise EmailDeliveryError(
+            "The HTTPS email provider returned an unreadable response."
+        ) from exc
+
+    message_id = result.get("id") if isinstance(result, dict) else None
+    if not message_id:
+        raise EmailDeliveryError("The HTTPS email provider did not return a message ID.")
+    return message_id
 
 
 def send_smtp_email_sync(
@@ -103,6 +164,14 @@ async def send_smtp_email(
     text_content: str,
     html_content: str | None = None,
 ) -> str:
+    if settings.resend_api_key.strip():
+        return await asyncio.to_thread(
+            send_resend_email_sync,
+            recipient,
+            subject,
+            text_content,
+            html_content,
+        )
     return await asyncio.to_thread(
         send_smtp_email_sync,
         recipient,
