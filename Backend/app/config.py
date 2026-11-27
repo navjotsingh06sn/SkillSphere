@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     # Interview code always runs in an isolated Judge0-compatible service.
     judge0_api_url: str = ""
     judge0_api_key: str = ""
-    judge0_language_ids: str = '{"python":71,"javascript":63,"cpp":54,"java":62,"go":60}'
+    judge0_language_ids: str = '{"python":71,"javascript":63,"cpp":54,"java":62,"go":60,"c":50,"csharp":51,"php":68,"ruby":72,"rust":73,"typescript":74,"bash":46}'
     interview_room_ticket_seconds: int = 90
     interview_stun_urls: str = "stun:stun.l.google.com:19302"
     interview_turn_urls: str = ""

@@ -5,7 +5,13 @@ from uuid import uuid4
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from app.routers.interview_live import SUSPICIOUS_EVENTS, _authorize
+from app.routers.interview_live import (
+    LANGUAGE_NAMES,
+    SUSPICIOUS_EVENTS,
+    ProblemInput,
+    _authorize,
+    _language_ids,
+)
 from app.routers.interviews import (
     interview_room_url,
     validate_interview_eligibility,
@@ -58,6 +64,22 @@ class InterviewLiveAuthorizationTests(unittest.TestCase):
         self.assertTrue(interview_room_url(interview_id).endswith(
             f"/candidate/interviews/{interview_id}/room"
         ))
+
+    def test_live_coding_uses_one_question_field_and_multiple_languages(self):
+        question = ProblemInput(
+            question="Write a function that returns the longest unique substring.",
+            allowed_languages=["python", "rust", "typescript", "csharp"],
+            test_cases=[{"input": "abba", "expected_output": "2"}],
+        )
+        self.assertEqual(question.question.startswith("Write a function"), True)
+        self.assertTrue({"rust", "typescript", "csharp"}.issubset(_language_ids()))
+        self.assertEqual(LANGUAGE_NAMES["csharp"], "C#")
+        legacy_payload = ProblemInput(
+            prompt="Return the longest unique substring length.",
+            title="Legacy title is ignored by the candidate UI",
+            test_cases=[{"input": "abc", "expected_output": "3"}],
+        )
+        self.assertEqual(legacy_payload.question, "Return the longest unique substring length.")
 
     def test_selected_candidate_can_be_scheduled_without_assessment_screening(self):
         application = SimpleNamespace(

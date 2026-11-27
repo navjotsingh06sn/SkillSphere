@@ -10,7 +10,7 @@ from uuid import UUID
 import httpx
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,15 +29,30 @@ logger = logging.getLogger("uvicorn.error")
 SUSPICIOUS_EVENTS = {
     "tab_hidden", "window_blur", "fullscreen_exited", "copy_attempt", "paste_attempt",
 }
-LANGUAGE_NAMES = {"python": "Python", "javascript": "JavaScript", "cpp": "C++", "java": "Java", "go": "Go"}
+LANGUAGE_NAMES = {
+    "python": "Python 3", "javascript": "JavaScript", "cpp": "C++", "java": "Java",
+    "go": "Go", "c": "C", "csharp": "C#", "php": "PHP", "ruby": "Ruby",
+    "rust": "Rust", "typescript": "TypeScript", "bash": "Bash",
+}
 
 
 class ProblemInput(BaseModel):
-    title: str = Field(min_length=3, max_length=200)
-    prompt: str = Field(min_length=10, max_length=12000)
-    allowed_languages: list[str] = Field(default_factory=lambda: ["python", "javascript"], min_length=1, max_length=5)
+    question: str = Field(
+        min_length=10,
+        max_length=12000,
+        validation_alias=AliasChoices("question", "prompt"),
+    )
+    allowed_languages: list[str] = Field(default_factory=lambda: ["python", "javascript"], min_length=1, max_length=12)
     time_limit_seconds: int = Field(default=1800, ge=60, le=7200)
-    test_cases: list[dict[str, str]] = Field(default_factory=list, max_length=20)
+    test_cases: list[dict[str, str]] = Field(min_length=1, max_length=20)
+
+    @field_validator("question")
+    @classmethod
+    def question_must_contain_text(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) < 10:
+            raise ValueError("Question must contain at least 10 non-whitespace characters.")
+        return value
 
 
 class RunInput(BaseModel):
@@ -130,6 +145,30 @@ def _language_ids() -> dict[str, int]:
         return {}
 
 
+def _problem_title(question: str) -> str:
+    first_line = next((line.strip() for line in question.splitlines() if line.strip()), "Live coding question")
+    return first_line[:200]
+
+
+def _clean_test_cases(test_cases: list[dict[str, str]]) -> list[dict[str, str]]:
+    clean_cases = []
+    for case in test_cases:
+        if set(case) != {"input", "expected_output"} or len(case["input"]) > 4000 or len(case["expected_output"]) > 4000:
+            raise HTTPException(status_code=422, detail="Each test case must contain input and expected output (up to 4,000 characters each).")
+        clean_cases.append({"input": case["input"], "expected_output": case["expected_output"]})
+    return clean_cases
+
+
+def _question_payload(problem: InterviewCodingProblem) -> dict:
+    return {
+        "id": str(problem.id), "question": problem.prompt, "title": problem.title,
+        "allowed_languages": problem.allowed_languages,
+        "time_limit_seconds": problem.time_limit_seconds,
+        "test_case_count": len(problem.test_cases or []),
+        "created_at": problem.created_at.isoformat() if problem.created_at else None,
+    }
+
+
 @router.get("/{interview_id}/room")
 async def get_room(interview_id: str, user: dict = Depends(get_current_user), db: AsyncSession = Depends(get_database)):
     interview, role = await _get_owned(db, interview_id, user)
@@ -154,8 +193,8 @@ async def get_room(interview_id: str, user: dict = Depends(get_current_user), db
         "recruiter": {"id": str(recruiter.id), "full_name": recruiter.full_name} if recruiter else None,
         "application_id": str(application.id) if application else None,
         "candidate_room_consent": extra.get("candidate_room_consent", {"accepted": False}),
-        "problems": [{"id": str(problem.id), "title": problem.title, "prompt": problem.prompt, "allowed_languages": problem.allowed_languages, "time_limit_seconds": problem.time_limit_seconds, "test_case_count": len(problem.test_cases or [])} for problem in problems],
-        "language_ids": _language_ids(), "feedback": feedback_payload,
+        "problems": [{"id": str(problem.id), "title": problem.title, "question": problem.prompt, "prompt": problem.prompt, "allowed_languages": problem.allowed_languages, "time_limit_seconds": problem.time_limit_seconds, "test_case_count": len(problem.test_cases or [])} for problem in problems],
+        "language_ids": _language_ids(), "language_labels": LANGUAGE_NAMES, "feedback": feedback_payload,
     }
 
 
@@ -238,26 +277,145 @@ async def end_room(interview_id: str, user: dict = Depends(recruiter_required), 
     return {"status": interview.status, "room_ended_at": now.isoformat()}
 
 
-@router.post("/{interview_id}/room/problems")
-async def create_problem(interview_id: str, data: ProblemInput, user: dict = Depends(recruiter_required), db: AsyncSession = Depends(get_database)):
-    interview, _ = await _get_owned(db, interview_id, user)
-    if interview.room_ended_at or interview.status == "cancelled":
-        raise HTTPException(status_code=409, detail="The interview room is no longer active.")
+@router.get("/coding-languages")
+async def coding_languages(user: dict = Depends(recruiter_required)):
+    return {"language_ids": _language_ids(), "language_labels": LANGUAGE_NAMES}
+
+
+@router.get("/coding-question-bank")
+async def list_coding_question_bank(user: dict = Depends(recruiter_required), db: AsyncSession = Depends(get_database)):
+    recruiter_id = parse_uuid(user["id"], "recruiter id")
+    questions = (await db.scalars(
+        select(InterviewCodingProblem)
+        .where(
+            InterviewCodingProblem.created_by == recruiter_id,
+            InterviewCodingProblem.interview_id.is_(None),
+        )
+        .order_by(InterviewCodingProblem.created_at.desc())
+        .limit(500)
+    )).all()
+    return [_question_payload(question) for question in questions]
+
+
+@router.post("/coding-question-bank", status_code=201)
+async def create_coding_bank_question(data: ProblemInput, user: dict = Depends(recruiter_required), db: AsyncSession = Depends(get_database)):
     languages = _language_ids()
     if any(language not in languages for language in data.allowed_languages):
         raise HTTPException(status_code=422, detail="Choose languages enabled by the configured code sandbox.")
-    clean_cases = []
-    for case in data.test_cases:
-        if set(case) != {"input", "expected_output"} or len(case["input"]) > 4000 or len(case["expected_output"]) > 4000:
-            raise HTTPException(status_code=422, detail="Each test case must contain input and expected output (up to 4,000 characters each).")
-        clean_cases.append({"input": case["input"], "expected_output": case["expected_output"]})
-    problem = InterviewCodingProblem(interview_id=interview.id, created_by=parse_uuid(user["id"], "user id"), title=data.title, prompt=data.prompt, allowed_languages=data.allowed_languages, time_limit_seconds=data.time_limit_seconds, test_cases=clean_cases)
+    problem = InterviewCodingProblem(
+        interview_id=None,
+        created_by=parse_uuid(user["id"], "recruiter id"),
+        title=_problem_title(data.question),
+        prompt=data.question.strip(),
+        allowed_languages=data.allowed_languages,
+        time_limit_seconds=data.time_limit_seconds,
+        test_cases=_clean_test_cases(data.test_cases),
+    )
     db.add(problem)
     await db.commit()
     await db.refresh(problem)
-    item = {"id": str(problem.id), "title": problem.title, "prompt": problem.prompt, "allowed_languages": problem.allowed_languages, "time_limit_seconds": problem.time_limit_seconds, "test_case_count": len(clean_cases)}
-    await hub.broadcast(str(interview.id), {"type": "problem_created", "problem": item})
-    return item
+    return _question_payload(problem)
+
+
+@router.post("/{interview_id}/room/questions/{question_id}/send")
+async def send_coding_bank_question(interview_id: str, question_id: str, user: dict = Depends(recruiter_required), db: AsyncSession = Depends(get_database)):
+    interview, _ = await _get_owned(db, interview_id, user)
+    if interview.status != "in_progress" or interview.room_ended_at:
+        raise HTTPException(status_code=409, detail="Start the live interview before sending a coding question.")
+
+    application = await db.get(Application, interview.application_id)
+    if not application or application.status not in {"shortlisted", "selected", "interview"}:
+        raise HTTPException(status_code=409, detail="Coding questions can only be sent to shortlisted or selected candidates.")
+
+    bank_question = await db.scalar(
+        select(InterviewCodingProblem).where(
+            InterviewCodingProblem.id == parse_uuid(question_id, "question id"),
+            InterviewCodingProblem.created_by == parse_uuid(user["id"], "recruiter id"),
+            InterviewCodingProblem.interview_id.is_(None),
+        )
+    )
+    if not bank_question:
+        raise HTTPException(status_code=404, detail="Coding question was not found in your question bank.")
+
+    languages = _language_ids()
+    allowed_languages = [item for item in bank_question.allowed_languages if item in languages]
+    if not allowed_languages:
+        raise HTTPException(status_code=409, detail="This question has no languages enabled by the current code sandbox.")
+
+    problem = InterviewCodingProblem(
+        interview_id=interview.id,
+        created_by=bank_question.created_by,
+        title=bank_question.title,
+        prompt=bank_question.prompt,
+        allowed_languages=allowed_languages,
+        time_limit_seconds=bank_question.time_limit_seconds,
+        test_cases=bank_question.test_cases,
+    )
+    db.add(problem)
+    await db.flush()
+    now = datetime.now(timezone.utc)
+    extra = dict(interview.extra_data or {})
+    active_problem = {
+        "problem_id": str(problem.id), "started_at": now.isoformat(),
+        "ends_at": (now + timedelta(seconds=problem.time_limit_seconds)).isoformat(),
+    }
+    extra["active_coding_problem"] = active_problem
+    interview.extra_data = extra
+    await db.commit()
+    await db.refresh(problem)
+
+    payload = {
+        **_question_payload(problem), "prompt": problem.prompt,
+        **active_problem,
+    }
+    await hub.broadcast(str(interview.id), {"type": "problem_activated", "problem": payload})
+    return payload
+
+
+@router.post("/{interview_id}/room/problems")
+async def create_problem(interview_id: str, data: ProblemInput, user: dict = Depends(recruiter_required), db: AsyncSession = Depends(get_database)):
+    interview, _ = await _get_owned(db, interview_id, user)
+    if interview.status != "in_progress" or interview.room_ended_at:
+        raise HTTPException(status_code=409, detail="Start the live interview before sending a coding question.")
+    languages = _language_ids()
+    if any(language not in languages for language in data.allowed_languages):
+        raise HTTPException(status_code=422, detail="Choose languages enabled by the configured code sandbox.")
+    clean_cases = _clean_test_cases(data.test_cases)
+    recruiter_id = parse_uuid(user["id"], "recruiter id")
+    question_text = data.question.strip()
+
+    bank_question = InterviewCodingProblem(
+        interview_id=None, created_by=recruiter_id,
+        title=_problem_title(question_text), prompt=question_text,
+        allowed_languages=data.allowed_languages,
+        time_limit_seconds=data.time_limit_seconds, test_cases=clean_cases,
+    )
+    db.add(bank_question)
+    await db.flush()
+    problem = InterviewCodingProblem(
+        interview_id=interview.id, created_by=recruiter_id,
+        title=bank_question.title, prompt=question_text,
+        allowed_languages=data.allowed_languages,
+        time_limit_seconds=data.time_limit_seconds, test_cases=clean_cases,
+    )
+    db.add(problem)
+    await db.flush()
+    now = datetime.now(timezone.utc)
+    extra = dict(interview.extra_data or {})
+    active_problem = {
+        "problem_id": str(problem.id), "started_at": now.isoformat(),
+        "ends_at": (now + timedelta(seconds=problem.time_limit_seconds)).isoformat(),
+    }
+    extra["active_coding_problem"] = active_problem
+    interview.extra_data = extra
+    await db.commit()
+    await db.refresh(bank_question)
+    await db.refresh(problem)
+
+    payload = {**_question_payload(problem), "prompt": problem.prompt, **active_problem}
+    await hub.broadcast(str(interview.id), {"type": "problem_activated", "problem": payload})
+    await hub.broadcast(str(interview.id), {"type": "question_saved", "question": _question_payload(bank_question)})
+    return {**payload, "saved_to_question_bank": True}
 
 
 @router.post("/{interview_id}/room/problems/{problem_id}/activate")
@@ -331,7 +489,7 @@ async def run_code(interview_id: str, problem_id: str, data: RunInput, user: dic
     db.add(submission)
     await db.commit()
     await db.refresh(submission)
-    safe_result = {"id": str(submission.id), **summary, "language": data.language, "created_at": submission.created_at.isoformat()}
+    safe_result = {"id": str(submission.id), **summary, "language": data.language, "source_code": submission.source_code, "question": problem.prompt, "is_final": submission.is_final, "created_at": submission.created_at.isoformat()}
     await hub.broadcast(str(interview.id), {"type": "coding_result", "submission": safe_result})
     return safe_result
 
@@ -339,11 +497,14 @@ async def run_code(interview_id: str, problem_id: str, data: RunInput, user: dic
 @router.get("/{interview_id}/room/submissions")
 async def list_submissions(interview_id: str, user: dict = Depends(get_current_user), db: AsyncSession = Depends(get_database)):
     interview, role = await _get_owned(db, interview_id, user)
-    query = select(InterviewCodeSubmission).where(InterviewCodeSubmission.interview_id == interview.id).order_by(InterviewCodeSubmission.created_at.desc()).limit(100)
+    query = select(InterviewCodeSubmission, InterviewCodingProblem).join(
+        InterviewCodingProblem,
+        InterviewCodeSubmission.problem_id == InterviewCodingProblem.id,
+    ).where(InterviewCodeSubmission.interview_id == interview.id).order_by(InterviewCodeSubmission.created_at.desc()).limit(100)
     if role == "candidate":
         query = query.where(InterviewCodeSubmission.candidate_id == parse_uuid(user["id"], "user id"))
-    rows = (await db.scalars(query)).all()
-    return [{"id": str(item.id), "problem_id": str(item.problem_id), "language": item.language, "source_code": item.source_code if role == "recruiter" else None, "result": item.result, "is_final": item.is_final, "created_at": item.created_at.isoformat()} for item in rows]
+    rows = (await db.execute(query)).all()
+    return [{"id": str(item.id), "problem_id": str(item.problem_id), "question": problem.prompt, "language": item.language, "source_code": item.source_code if role == "recruiter" else None, "result": item.result, "is_final": item.is_final, "created_at": item.created_at.isoformat()} for item, problem in rows]
 
 
 @router.post("/{interview_id}/room/activity")

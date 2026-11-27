@@ -12,12 +12,20 @@ function formatClock(seconds) {
   return `${String(Math.floor(safe / 3600)).padStart(2, "0")}:${String(Math.floor(safe / 60) % 60).padStart(2, "0")}:${String(safe % 60).padStart(2, "0")}`;
 }
 
+function stopMediaStream(stream) {
+  stream?.getTracks().forEach(track => {
+    track.enabled = false;
+    track.stop();
+  });
+}
+
 export default function InterviewRoom({ audience }) {
   const { interviewId } = useParams();
   const navigate = useNavigate();
   const recruiter = audience === "recruiter";
   const localVideo = useRef(null);
   const remoteVideo = useRef(null);
+  const mediaSessionId = useRef(0);
   const socket = useRef(null);
   const peer = useRef(null);
   const pendingIce = useRef([]);
@@ -38,7 +46,8 @@ export default function InterviewRoom({ audience }) {
   const [consent, setConsent] = useState(false);
   const [consented, setConsented] = useState(false);
   const [activeProblem, setActiveProblem] = useState(null);
-  const [problemForm, setProblemForm] = useState({ title: "", prompt: "", allowed_languages: ["python", "javascript"], time_limit_seconds: 1800, test_cases: "[]" });
+  const [problemForm, setProblemForm] = useState({ question: "", allowed_languages: ["python", "javascript"], time_limit_seconds: 1800, test_cases: "[]" });
+  const [bankQuestions, setBankQuestions] = useState([]);
   const [language, setLanguage] = useState("python");
   const [sourceCode, setSourceCode] = useState("");
   const [liveCode, setLiveCode] = useState("");
@@ -46,24 +55,24 @@ export default function InterviewRoom({ audience }) {
   const [running, setRunning] = useState(false);
   const [submissions, setSubmissions] = useState([]);
   const [events, setEvents] = useState([]);
-  const [feedback, setFeedback] = useState({ rating: 4, strengths: "", improvement_areas: "", private_notes: "", recommendation: "yes" });
 
   const candidateConsentKey = useMemo(() => `skillsphere-interview-consent-${interviewId}`, [interviewId]);
 
   const load = useCallback(async () => {
     try {
-      const [data, activity, attempts] = await Promise.all([
+      const [data, activity, attempts, bank] = await Promise.all([
         api(`/interviews/${interviewId}/room`),
         api(`/interviews/${interviewId}/room/activity`),
         api(`/interviews/${interviewId}/room/submissions`),
+        recruiter ? api("/interviews/coding-question-bank") : Promise.resolve([]),
       ]);
       setRoom(data);
       const currentProblem = data.problems.find(item => item.id === data.active_coding_problem?.problem_id);
       setActiveProblem(currentProblem ? { ...currentProblem, ...data.active_coding_problem } : null);
       setEvents(activity.reverse());
       setSubmissions(attempts);
+      setBankQuestions(bank);
       setLiveCode(attempts.find(item => item.is_final)?.source_code || "");
-      if (data.feedback) setFeedback(current => ({ ...current, ...data.feedback }));
       if (!recruiter) setConsented(Boolean(data.candidate_room_consent?.accepted || sessionStorage.getItem(candidateConsentKey)));
       setError("");
     } catch (err) { setError(err.message); }
@@ -108,13 +117,15 @@ export default function InterviewRoom({ audience }) {
   }, [recruiter, connected, consented, logActivity]);
 
   const closeMedia = useCallback(() => {
+    mediaSessionId.current += 1;
     clearTimeout(codeTimer.current);
     socket.current?.close(); socket.current = null;
     peer.current?.close(); peer.current = null;
     pendingIce.current = [];
-    shareStream.current?.getTracks().forEach(track => track.stop()); shareStream.current = null;
-    localStream.current?.getTracks().forEach(track => track.stop()); localStream.current = null;
+    stopMediaStream(shareStream.current); shareStream.current = null;
+    stopMediaStream(localStream.current); localStream.current = null;
     setConnected(false); setSharing(false); setParticipants([]);
+    setMuted(false); setCameraOff(false);
     if (localVideo.current) localVideo.current.srcObject = null;
     if (remoteVideo.current) remoteVideo.current.srcObject = null;
   }, []);
@@ -122,32 +133,44 @@ export default function InterviewRoom({ audience }) {
   useEffect(() => () => closeMedia(), [closeMedia]);
 
   async function startRoom() {
+    const sessionId = mediaSessionId.current + 1;
+    mediaSessionId.current = sessionId;
+    let acquiredStream = null;
+    const sessionIsCurrent = () => mediaSessionId.current === sessionId;
     setError(""); setNotice("");
     try {
       if (!recruiter && !consented) {
         if (!consent) throw new Error("Please accept the monitoring notice before joining.");
         await api(`/interviews/${interviewId}/room/consent`, { method: "POST", body: json({ accepted: true }) });
+        if (!sessionIsCurrent()) return;
         sessionStorage.setItem(candidateConsentKey, "yes");
         setConsented(true);
       }
       if (recruiter && room.status === "scheduled") {
         await api(`/interviews/${interviewId}/room/start`, { method: "POST" });
+        if (!sessionIsCurrent()) return;
         await load();
+        if (!sessionIsCurrent()) return;
       }
       const ticket = await api(`/interviews/${interviewId}/room/ticket`, { method: "POST" });
+      if (!sessionIsCurrent()) return;
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+      acquiredStream = stream;
+      if (!sessionIsCurrent()) { stopMediaStream(stream); return; }
       localStream.current = stream;
       if (localVideo.current) { localVideo.current.srcObject = stream; await localVideo.current.play(); }
+      if (!sessionIsCurrent()) { stopMediaStream(stream); return; }
       const iceConfig = await api(`/interviews/${interviewId}/room/ice`);
+      if (!sessionIsCurrent()) { stopMediaStream(stream); return; }
       const configuration = { iceServers: iceConfig.ice_servers || [] };
       const connection = new RTCPeerConnection(configuration);
       peer.current = connection;
       pendingIce.current = [];
       offerInFlight.current = false;
       stream.getTracks().forEach(track => connection.addTrack(track, stream));
-      connection.ontrack = event => { if (remoteVideo.current) remoteVideo.current.srcObject = event.streams[0]; };
-      connection.onicecandidate = event => { if (event.candidate) socket.current?.send(JSON.stringify({ type: "ice_candidate", payload: event.candidate.toJSON() })); };
-      connection.onconnectionstatechange = () => { if (connection.connectionState === "failed") setError("Direct connection failed. Configure TURN relay service for users behind restrictive networks."); };
+      connection.ontrack = event => { if (sessionIsCurrent() && remoteVideo.current) remoteVideo.current.srcObject = event.streams[0]; };
+      connection.onicecandidate = event => { if (sessionIsCurrent() && event.candidate) socket.current?.send(JSON.stringify({ type: "ice_candidate", payload: event.candidate.toJSON() })); };
+      connection.onconnectionstatechange = () => { if (sessionIsCurrent() && connection.connectionState === "failed") setError("Direct connection failed. Configure TURN relay service for users behind restrictive networks."); };
       const ws = new WebSocket(`${WS_BASE}/interviews/${interviewId}/room/ws`, ["skillsphere-room", ticket.ticket]);
       socket.current = ws;
       const createRecruiterOffer = async () => {
@@ -163,10 +186,11 @@ export default function InterviewRoom({ audience }) {
         if (!peer.current?.remoteDescription) return;
         for (const candidate of pendingIce.current.splice(0)) { try { await peer.current.addIceCandidate(candidate); } catch {} }
       };
-      ws.onopen = () => { setConnected(true); ws.send(JSON.stringify({ type: "candidate_joined" })); setNotice("Connected to the in-platform room."); };
-      ws.onclose = event => { setConnected(false); if (![1000, 4409].includes(event.code)) setError("Room connection closed. Reconnect to continue."); };
-      ws.onerror = () => setError("Could not connect to the live interview room.");
+      ws.onopen = () => { if (!sessionIsCurrent()) { ws.close(); return; } setConnected(true); ws.send(JSON.stringify({ type: "candidate_joined" })); setNotice("Connected to the in-platform room."); };
+      ws.onclose = event => { if (!sessionIsCurrent()) return; setConnected(false); if (![1000, 4409].includes(event.code)) setError("Room connection closed. Reconnect to continue."); };
+      ws.onerror = () => { if (sessionIsCurrent()) setError("Could not connect to the live interview room."); };
       ws.onmessage = async event => {
+        if (!sessionIsCurrent()) return;
         let message;
         try { message = JSON.parse(event.data); } catch { return; }
         if (message.type === "room_state") {
@@ -197,7 +221,10 @@ export default function InterviewRoom({ audience }) {
         if (message.type === "room_ended") { await load(); setNotice("The recruiter ended the room."); closeMedia(); }
         if (message.type === "coding_result") { setSubmissions(current => [message.submission, ...current].slice(0, 100)); }
       };
-    } catch (err) { closeMedia(); setError(err.message || "Camera or microphone access was not granted."); }
+    } catch (err) {
+      if (acquiredStream && !sessionIsCurrent()) stopMediaStream(acquiredStream);
+      if (sessionIsCurrent()) { closeMedia(); setError(err.message || "Camera or microphone access was not granted."); }
+    }
   }
 
   function toggleTrack(kind) {
@@ -247,10 +274,26 @@ export default function InterviewRoom({ audience }) {
   async function createProblem(event) {
     event.preventDefault(); setError("");
     try {
-      const data = await api(`/interviews/${interviewId}/room/problems`, { method: "POST", body: json({ ...problemForm, test_cases: JSON.parse(problemForm.test_cases), time_limit_seconds: Number(problemForm.time_limit_seconds) }) });
-      setNotice(`Saved “${data.title}”. Activate it when you are ready to start its timer.`);
+      const data = await api(`/interviews/${interviewId}/room/problems`, { method: "POST", body: json({ ...problemForm, question: problemForm.question.trim(), test_cases: JSON.parse(problemForm.test_cases), time_limit_seconds: Number(problemForm.time_limit_seconds) }) });
+      setActiveProblem(data);
+      setSourceCode("");
+      setRunResult(null);
+      setProblemForm(current => ({ ...current, question: "", test_cases: "[]" }));
+      setNotice("Question sent to the candidate and saved in your question bank.");
       await load();
     } catch (err) { setError(err.message.includes("JSON") ? "Test cases must be valid JSON with input and expected_output fields." : err.message); }
+  }
+
+  async function sendBankQuestion(question) {
+    setError("");
+    try {
+      const data = await api(`/interviews/${interviewId}/room/questions/${question.id}/send`, { method: "POST" });
+      setActiveProblem(data);
+      setSourceCode("");
+      setRunResult(null);
+      setNotice("Saved question sent to the candidate; its live timer has started.");
+      await load();
+    } catch (err) { setError(err.message); }
   }
 
   async function activateProblem(problem) {
@@ -277,15 +320,9 @@ export default function InterviewRoom({ audience }) {
     finally { setRunning(false); }
   }
 
-  async function saveFeedback(event) {
-    event.preventDefault();
-    try { const data = await api(`/interviews/${interviewId}/room/feedback`, { method: "PUT", body: json({ ...feedback, rating: Number(feedback.rating) }) }); setFeedback(current => ({ ...current, ...data })); setNotice("Interview feedback saved."); }
-    catch (err) { setError(err.message); }
-  }
-
   const activeLanguages = activeProblem?.allowed_languages || [];
   const secondsRemaining = activeProblem?.ends_at ? Math.max(0, Math.ceil((new Date(activeProblem.ends_at).getTime() - Date.now()) / 1000)) : 0;
-  const editorLanguage = { python: "python", javascript: "javascript", cpp: "cpp", java: "java", go: "go" }[language] || "plaintext";
+  const editorLanguage = { python: "python", javascript: "javascript", cpp: "cpp", java: "java", go: "go", c: "c", csharp: "csharp", php: "php", ruby: "ruby", rust: "rust", typescript: "typescript", bash: "shell" }[language] || "plaintext";
 
   return <div className="interview-room-page">
     <header className="interview-room-topbar"><Link to={recruiter ? "/recruiter/interviews" : "/candidate/interviews"}><ArrowLeft size={16} /> Interviews</Link><div><span className={"room-live-dot " + (room?.status === "in_progress" && !room?.room_ended_at ? "room-live" : "")}></span><b>{room?.job_title || "Interview room"}</b><small>{room?.status?.replaceAll("_", " ")}</small></div><span className="room-clock">{formatClock(elapsed)}</span></header>
@@ -296,14 +333,23 @@ export default function InterviewRoom({ audience }) {
       </section>
       <section className="panel room-participants-panel"><span className="eyebrow">PARTICIPANTS</span><h3>{participants.length || 0} connected</h3>{participants.map(item => <div className="room-participant" key={item.id}><span className="room-avatar">{(item.name || "?").slice(0,1).toUpperCase()}</span><span><b>{item.name}</b><small>{item.role === "candidate" ? "Candidate" : "Recruiter"}{item.id === room?.[item.role]?.id ? " · You" : ""}</small></span><span className="room-live-dot room-live" /></div>)}{connected && <small className="room-monitor-note">Camera and microphone are live. Nothing is recorded.</small>}</section>
     </div>
-    {room?.role === "candidate" && <section className="panel room-coding-panel"><div className="room-section-heading"><div><span className="eyebrow"><Code2 size={14} /> LIVE CODING</span><h2>{activeProblem?.title || "Waiting for a coding problem"}</h2></div>{activeProblem && <span className="room-code-timer">{formatClock(secondsRemaining)}</span>}</div>
-      {activeProblem ? <><p className="room-problem-prompt">{activeProblem.prompt}</p><div className="room-code-toolbar"><label>Language<select value={language} onChange={event => setLanguage(event.target.value)}>{activeLanguages.map(item => <option key={item} value={item}>{item[0].toUpperCase() + item.slice(1)}</option>)}</select></label><small>{activeProblem.test_case_count} test cases · {Math.floor(activeProblem.time_limit_seconds / 60)} min</small></div><div className="room-editor"><Editor height="360px" language={editorLanguage} value={sourceCode} onChange={value => broadcastCode(value || "")} theme="vs-dark" options={{ minimap: { enabled: false }, fontSize: 14, automaticLayout: true, readOnly: !connected, scrollBeyondLastLine: false }} onMount={(editor) => { const node = editor.getDomNode(); node?.addEventListener("copy", event => { event.preventDefault(); void logActivity("copy_attempt"); }); node?.addEventListener("paste", event => { event.preventDefault(); void logActivity("paste_attempt"); }); }} /></div><div className="room-code-actions"><button className="button button-outline" onClick={() => runCode(false)} disabled={running || !connected}><Play size={15} />{running ? "Running in sandbox…" : "Run tests"}</button><button className="button button-primary" onClick={() => runCode(true)} disabled={running || !connected}><Send size={15} />Submit code</button></div>{runResult && <div className="room-run-result"><b>{runResult.passed}/{runResult.total} tests passed</b>{runResult.tests?.map((test, index) => <div className={test.passed ? "room-test-pass" : "room-test-fail"} key={index}><span>{test.passed ? "Passed" : test.status}</span>{test.stderr && <pre>{test.stderr}</pre>}{!test.passed && test.stdout && <pre>Output: {test.stdout}</pre>}</div>)}</div>}</> : <p>The recruiter can create and activate a problem in this room.</p>}
+    {room?.role === "candidate" && <section className="panel room-coding-panel"><div className="room-section-heading"><div><span className="eyebrow"><Code2 size={14} /> LIVE CODING</span><h2>{activeProblem ? "Question for you" : "Waiting for a coding question"}</h2></div>{activeProblem && <span className="room-code-timer">{formatClock(secondsRemaining)}</span>}</div>
+      {activeProblem ? <><p className="room-problem-prompt">{activeProblem.question || activeProblem.prompt}</p><div className="room-code-toolbar"><label>Language<select value={language} onChange={event => setLanguage(event.target.value)}>{activeLanguages.map(item => <option key={item} value={item}>{room.language_labels?.[item] || item}</option>)}</select></label><small>{activeProblem.test_case_count} test cases · {Math.floor(activeProblem.time_limit_seconds / 60)} min</small></div><div className="room-editor"><Editor height="360px" language={editorLanguage} value={sourceCode} onChange={value => broadcastCode(value || "")} theme="vs-dark" options={{ minimap: { enabled: false }, fontSize: 14, automaticLayout: true, readOnly: !connected, scrollBeyondLastLine: false }} onMount={(editor) => { const node = editor.getDomNode(); node?.addEventListener("copy", event => { event.preventDefault(); void logActivity("copy_attempt"); }); node?.addEventListener("paste", event => { event.preventDefault(); void logActivity("paste_attempt"); }); }} /></div><div className="room-code-actions"><button className="button button-outline" onClick={() => runCode(false)} disabled={running || !connected}><Play size={15} />{running ? "Running in sandbox…" : "Run tests"}</button><button className="button button-primary" onClick={() => runCode(true)} disabled={running || !connected}><Send size={15} />Submit code</button></div>{runResult && <div className="room-run-result"><b>{runResult.passed}/{runResult.total} tests passed</b>{runResult.tests?.map((test, index) => <div className={test.passed ? "room-test-pass" : "room-test-fail"} key={index}><span>{test.passed ? "Passed" : test.status}</span>{test.stderr && <pre>{test.stderr}</pre>}{!test.passed && test.stdout && <pre>Output: {test.stdout}</pre>}</div>)}</div>}</> : <p>The recruiter will send your coding question in this room.</p>}
     </section>}
-    {room?.role === "recruiter" && <section className="room-recruiter-tools"><section className="panel room-coding-panel"><span className="eyebrow"><Code2 size={14} /> CODING PROBLEM SETUP</span><h2>Live coding</h2>{room.problems?.map(problem => <div className="room-problem-choice" key={problem.id}><b>{problem.title}</b><span>{problem.test_case_count} tests · {Math.floor(problem.time_limit_seconds/60)} min</span><button className="button button-outline" disabled={!connected || room.status !== "in_progress"} onClick={() => activateProblem(problem)}>Activate</button></div>)}<form className="edit-form room-problem-form" onSubmit={createProblem}><label>Problem title<input required maxLength="200" value={problemForm.title} onChange={event => setProblemForm({ ...problemForm, title: event.target.value })} /></label><label>Problem statement<textarea required rows="4" maxLength="12000" value={problemForm.prompt} onChange={event => setProblemForm({ ...problemForm, prompt: event.target.value })} /></label><label>Languages<select multiple value={problemForm.allowed_languages} onChange={event => setProblemForm({ ...problemForm, allowed_languages: Array.from(event.target.selectedOptions, option => option.value) })}>{Object.keys(room.language_ids || {}).map(item => <option key={item} value={item}>{item}</option>)}</select></label><label>Time limit (seconds)<input type="number" min="60" max="7200" value={problemForm.time_limit_seconds} onChange={event => setProblemForm({ ...problemForm, time_limit_seconds: event.target.value })} /></label><label>Test cases (JSON)<small>Keep test data private from candidates</small><textarea rows="5" value={problemForm.test_cases} onChange={event => setProblemForm({ ...problemForm, test_cases: event.target.value })} /></label><button className="button button-primary" disabled={!connected}>Save problem</button></form>{activeProblem && <><h3>Candidate live code · {activeProblem.title}</h3><div className="room-editor"><Editor height="300px" language={editorLanguage} value={liveCode} theme="vs-dark" options={{ readOnly: true, minimap: { enabled: false }, fontSize: 13, automaticLayout: true }} /></div></>}</section></section>}
+    {room?.role === "recruiter" && <section className="room-recruiter-tools"><section className="panel room-coding-panel"><span className="eyebrow"><Code2 size={14} /> LIVE CODING</span><h2>Send a question to the candidate</h2>
+      {room.problems?.length > 0 && <><h3>Questions used in this interview</h3>{room.problems.map(problem => <div className="room-problem-choice" key={problem.id}><span className="room-question-preview">{problem.question || problem.prompt}</span><small>{problem.test_case_count} tests · {Math.floor(problem.time_limit_seconds/60)} min</small><button className="button button-outline" disabled={!connected || room.status !== "in_progress"} onClick={() => activateProblem(problem)}>Send again</button></div>)}</>}
+      {bankQuestions.length > 0 && <><h3>Your saved questions</h3>{bankQuestions.map(question => <div className="room-problem-choice" key={question.id}><span className="room-question-preview">{question.question}</span><small>{question.test_case_count} tests · {Math.floor(question.time_limit_seconds/60)} min</small><button className="button button-outline" disabled={!connected || room.status !== "in_progress"} onClick={() => sendBankQuestion(question)}>Send to candidate</button></div>)}</>}
+      <form className="edit-form room-problem-form" onSubmit={createProblem}><label>Question<textarea required minLength="10" maxLength="12000" rows="6" placeholder="Write the question exactly as the candidate should see it" value={problemForm.question} onChange={event => setProblemForm({ ...problemForm, question: event.target.value })} /></label>
+        <div className="coding-language-checklist"><b>Allowed languages</b><div>{Object.keys(room.language_ids || {}).map(item => <label key={item}><input type="checkbox" checked={problemForm.allowed_languages.includes(item)} onChange={event => setProblemForm(current => ({ ...current, allowed_languages: event.target.checked ? [...current.allowed_languages, item] : current.allowed_languages.filter(language => language !== item) }))} />{room.language_labels?.[item] || item}</label>)}</div></div>
+        <label>Time limit (seconds)<input type="number" min="60" max="7200" value={problemForm.time_limit_seconds} onChange={event => setProblemForm({ ...problemForm, time_limit_seconds: event.target.value })} /></label>
+        <label>Private test cases (JSON)<small>At least one input and expected_output pair; candidates cannot see these values</small><textarea required rows="5" value={problemForm.test_cases} onChange={event => setProblemForm({ ...problemForm, test_cases: event.target.value })} /></label>
+        <button className="button button-primary" disabled={!connected || room.status !== "in_progress" || !problemForm.allowed_languages.length}>Save to question bank &amp; send to candidate</button>
+      </form>
+      {activeProblem && <><h3>Candidate live code</h3><div className="room-editor"><Editor height="300px" language={editorLanguage} value={liveCode} theme="vs-dark" options={{ readOnly: true, minimap: { enabled: false }, fontSize: 13, automaticLayout: true }} /></div></>}
+    </section></section>}
     {room?.role === "recruiter" && <section className="panel room-events-panel"><div className="room-section-heading"><div><span className="eyebrow"><ShieldAlert size={14} /> REVIEW SIGNALS</span><h2>Browser activity</h2></div><span>{events.length} logged</span></div><p>Signals are browser-observable events, not proof of misconduct. The room does not monitor other apps or websites.</p>{events.length ? <ol className="room-event-list">{events.map(event => <li key={event.id}><time>{new Date(event.occurred_at).toLocaleTimeString()}</time><b>{event.event_type.replaceAll("_", " ")}</b></li>)}</ol> : <small>No activity signals recorded.</small>}</section>}
     {room?.role === "candidate" && room.status === "completed" && <section className="panel room-events-panel"><span className="eyebrow">YOUR INTERVIEW SUMMARY</span><h2>Interview completed</h2>{events.length ? <><p>{events.length} browser activity signal(s) were recorded. These are review signals, not proof of misconduct.</p><ol className="room-event-list">{events.map(event => <li key={event.id}><time>{new Date(event.occurred_at).toLocaleString()}</time><b>{event.event_type.replaceAll("_", " ")}</b></li>)}</ol></> : <p>No browser activity signals were recorded.</p>}{room.feedback && <div className="room-candidate-feedback"><h3>Recruiter feedback</h3><p>Rating: {room.feedback.rating}/5 · {room.feedback.recommendation.replaceAll("_", " ")}</p>{room.feedback.strengths && <p><b>Strengths:</b> {room.feedback.strengths}</p>}{room.feedback.improvement_areas && <p><b>Areas to improve:</b> {room.feedback.improvement_areas}</p>}</div>}</section>}
-    {room?.role === "recruiter" && submissions.length > 0 && <section className="panel room-events-panel"><span className="eyebrow">CODE SUBMISSIONS</span><h2>Candidate results</h2>{submissions.map(item => <div className="room-submission-row" key={item.id}><b>{item.language} {item.is_final ? "· Final" : "· Run"}</b><span>{item.result.passed}/{item.result.total} passed</span><time>{new Date(item.created_at).toLocaleString()}</time></div>)}</section>}
+    {room?.role === "recruiter" && submissions.length > 0 && <section className="panel room-events-panel"><span className="eyebrow">CODE SUBMISSIONS</span><h2>Candidate results</h2>{submissions.map(item => <details className="room-submission-detail" key={item.id}><summary><b>{item.language} {item.is_final ? "· Final submission" : "· Run"}</b><span>{item.result.passed}/{item.result.total} tests passed</span><time>{new Date(item.created_at).toLocaleString()}</time></summary><p><b>Question:</b> {item.question}</p><div className="room-submission-tests">{item.result.tests?.map((test, index) => <div className={test.passed ? "room-test-pass" : "room-test-fail"} key={index}><b>Test {index + 1}: {test.passed ? "Passed" : test.status}</b>{test.stdout && <pre>Output: {test.stdout}</pre>}{test.stderr && <pre>{test.stderr}</pre>}</div>)}</div><details><summary>View submitted code</summary><pre className="room-submitted-code">{item.source_code}</pre></details></details>)}</section>}
     {room?.role === "candidate" && submissions.length > 0 && <section className="panel room-events-panel"><span className="eyebrow">YOUR CODING RESULTS</span><h2>Submissions</h2>{submissions.map(item => <div className="room-submission-row" key={item.id}><b>{item.language} {item.is_final ? "· Final" : "· Run"}</b><span>{item.result.passed}/{item.result.total} passed</span><time>{new Date(item.created_at).toLocaleString()}</time></div>)}</section>}
-    {room?.role === "recruiter" && room?.status === "completed" && <form className="panel room-feedback-form" onSubmit={saveFeedback}><span className="eyebrow">INTERVIEW REPORT</span><h2>Candidate evaluation</h2><div className="form-grid"><label>Rating<select value={feedback.rating} onChange={event => setFeedback({ ...feedback, rating: event.target.value })}>{[1,2,3,4,5].map(value => <option key={value}>{value}</option>)}</select></label><label>Recommendation<select value={feedback.recommendation} onChange={event => setFeedback({ ...feedback, recommendation: event.target.value })}><option value="strong_yes">Strong yes</option><option value="yes">Yes</option><option value="undecided">Undecided</option><option value="no">No</option></select></label><label>Strengths<textarea rows="3" value={feedback.strengths} onChange={event => setFeedback({ ...feedback, strengths: event.target.value })} /></label><label>Areas to improve<textarea rows="3" value={feedback.improvement_areas} onChange={event => setFeedback({ ...feedback, improvement_areas: event.target.value })} /></label><label className="wide-field">Private recruiter notes<textarea rows="3" value={feedback.private_notes} onChange={event => setFeedback({ ...feedback, private_notes: event.target.value })} /></label></div><button className="button button-primary">Save evaluation</button></form>}
     </div>{(error || notice) && <div className={error ? "room-error room-toast" : "room-toast"}>{error || notice}</div>}</div>;
 }

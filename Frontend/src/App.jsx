@@ -1,5 +1,5 @@
 import React, { createContext, lazy, Suspense, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { ArrowDownRight, ArrowRight, Bell, BriefcaseBusiness, Building2, CalendarDays, Check, ChevronDown, CircleUserRound, Eye, EyeOff, FileText, LayoutDashboard, LockKeyhole, LogOut, Menu, Moon, Palette, Search, ShieldCheck, Sparkles, Sun, Trash2, Users, Volume2, VolumeX, X, UploadCloud } from "lucide-react";
+import { ArrowDownRight, ArrowRight, Bell, BriefcaseBusiness, Building2, CalendarDays, Check, ChevronDown, CircleUserRound, Code2, Eye, EyeOff, FileText, LayoutDashboard, LockKeyhole, LogOut, Menu, Moon, Palette, Search, ShieldCheck, Sparkles, Sun, Trash2, Users, Volume2, VolumeX, X, UploadCloud } from "lucide-react";
 import { Link, NavLink, Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, apiBlob, json } from "./api.js";
 import RecruiterAssessments from "./RecruiterAssessments.jsx";
@@ -127,7 +127,7 @@ function PublicNav() {
 }
 const navByRole = {
   candidate: [["Overview", "/candidate", LayoutDashboard], ["Notifications", "/candidate/notifications", Bell], ["My profile", "/candidate/profile", CircleUserRound], ["My resume", "/candidate/resume", FileText], ["Explore jobs", "/candidate/jobs", Search], ["Saved jobs", "/candidate/saved", Check], ["Applications", "/candidate/applications", BriefcaseBusiness], ["Assessments", "/candidate/assessments", Sparkles], ["Interviews", "/candidate/interviews", CalendarDays], ["AI analysis", "/candidate/analysis", Sparkles], ["Settings", "/candidate/settings", ShieldCheck]],
-  recruiter: [["Overview", "/recruiter", LayoutDashboard], ["Notifications", "/recruiter/notifications", Bell], ["Company profile", "/recruiter/company", Building2], ["My posted jobs", "/recruiter/jobs", BriefcaseBusiness], ["Applicants", "/recruiter/applicants", Users], ["Assessments", "/recruiter/assessments", Sparkles], ["Question bank", "/recruiter/question-bank", FileText], ["Interviews", "/recruiter/interviews", CalendarDays], ["Settings", "/recruiter/settings", ShieldCheck]],
+  recruiter: [["Overview", "/recruiter", LayoutDashboard], ["Notifications", "/recruiter/notifications", Bell], ["Company profile", "/recruiter/company", Building2], ["My posted jobs", "/recruiter/jobs", BriefcaseBusiness], ["Applicants", "/recruiter/applicants", Users], ["Assessments", "/recruiter/assessments", Sparkles], ["Question bank", "/recruiter/question-bank", FileText], ["Coding questions", "/recruiter/coding-question-bank", Code2], ["Interviews", "/recruiter/interviews", CalendarDays], ["Settings", "/recruiter/settings", ShieldCheck]],
   admin: [["Overview", "/admin", LayoutDashboard], ["Notifications", "/admin/notifications", Bell], ["Manage users", "/admin/users", Users], ["Moderate jobs", "/admin/jobs", BriefcaseBusiness], ["Proctoring review", "/admin/proctoring", ShieldCheck], ["Settings", "/admin/settings", ShieldCheck]],
 };
 function DashboardLayout() {
@@ -892,13 +892,17 @@ function ApplicantDetailPage() {
   </>;
 }
 
-function InterviewManagementPage() {
+function InterviewManagementPage({ codingBankOnly = false }) {
   const { user } = useAuth();
   const isRecruiter = user?.role === "recruiter";
   const [items, setItems] = useState([]);
   const [error, setError] = useState("");
   const [reschedulingId, setReschedulingId] = useState("");
   const [form, setForm] = useState({ scheduled_at: "", duration_minutes: "30", mode: "in_platform", meeting_link: "", location: "", notes: "" });
+  const [codingQuestions, setCodingQuestions] = useState([]);
+  const [codingLanguages, setCodingLanguages] = useState({ language_ids: {}, language_labels: {} });
+  const [codingQuestionForm, setCodingQuestionForm] = useState({ question: "", allowed_languages: ["python", "javascript"], time_limit_seconds: "1800", test_cases: "[]" });
+  const [codingQuestionBusy, setCodingQuestionBusy] = useState(false);
 
   async function load() {
     try {
@@ -907,8 +911,48 @@ function InterviewManagementPage() {
     } catch (err) {
       setError(err.message);
     }
+    if (isRecruiter) {
+      try {
+        const [questions, languages] = await Promise.all([
+          api("/interviews/coding-question-bank"),
+          api("/interviews/coding-languages"),
+        ]);
+        setCodingQuestions(questions);
+        setCodingLanguages(languages);
+        setCodingQuestionForm(current => ({
+          ...current,
+          allowed_languages: current.allowed_languages.filter(language => languages.language_ids[language]).length
+            ? current.allowed_languages.filter(language => languages.language_ids[language])
+            : Object.keys(languages.language_ids).slice(0, 2),
+        }));
+      } catch (err) {
+        setError(err.message);
+      }
+    }
   }
   useEffect(() => { load(); }, []);
+
+  async function saveCodingQuestion(event) {
+    event.preventDefault();
+    setCodingQuestionBusy(true);
+    setError("");
+    try {
+      const saved = await api("/interviews/coding-question-bank", {
+        method: "POST",
+        body: json({
+          ...codingQuestionForm,
+          time_limit_seconds: Number(codingQuestionForm.time_limit_seconds),
+          test_cases: JSON.parse(codingQuestionForm.test_cases),
+        }),
+      });
+      setCodingQuestions(current => [saved, ...current]);
+      setCodingQuestionForm(current => ({ ...current, question: "", test_cases: "[]" }));
+    } catch (err) {
+      setError(err.message.includes("JSON") ? "Test cases must be valid JSON with input and expected_output fields." : err.message);
+    } finally {
+      setCodingQuestionBusy(false);
+    }
+  }
 
   async function respond(interview, response) {
     try {
@@ -973,9 +1017,21 @@ function InterviewManagementPage() {
   }
 
   return <>
-    <PageHeader eyebrow="INTERVIEW MANAGEMENT" title={isRecruiter ? "Your scheduled interviews." : "Your interviews."} description={isRecruiter ? "Reschedule or cancel interviews and keep candidates updated." : "Review the details of your interviews and accept or decline invitations."} />
+    <PageHeader eyebrow={codingBankOnly ? "CODING QUESTION BANK" : "INTERVIEW MANAGEMENT"} title={codingBankOnly ? "Your reusable coding questions." : isRecruiter ? "Your scheduled interviews." : "Your interviews."} description={codingBankOnly ? "Build coding questions once, then send them directly to shortlisted candidates in a live interview." : isRecruiter ? "Reschedule or cancel interviews and keep candidates updated." : "Review the details of your interviews and accept or decline invitations."} />
     <Notice>{error}</Notice>
-    {items.length ? <div className="interview-list">{items.map(interview => <section className="panel interview-card" key={interview.id}>
+    {isRecruiter && <section className="panel coding-bank-manager">
+      <div className="panel-heading"><div><span className="eyebrow">REUSABLE LIVE CODING</span><h3>Coding question bank</h3></div><span className="status status-shortlisted">{codingQuestions.length} saved</span></div>
+      <p>Write a question once and reuse it in any shortlisted candidate’s live interview room. Test cases stay private from candidates.</p>
+      <form className="edit-form" onSubmit={saveCodingQuestion}>
+        <label>Question<textarea required minLength="10" maxLength="12000" rows="5" placeholder="Write the coding question exactly as the candidate should see it" value={codingQuestionForm.question} onChange={event => setCodingQuestionForm({ ...codingQuestionForm, question: event.target.value })} /></label>
+        <div className="coding-language-checklist"><b>Allowed languages</b><div>{Object.keys(codingLanguages.language_ids || {}).map(language => <label key={language}><input type="checkbox" checked={codingQuestionForm.allowed_languages.includes(language)} onChange={event => setCodingQuestionForm(current => ({ ...current, allowed_languages: event.target.checked ? [...current.allowed_languages, language] : current.allowed_languages.filter(item => item !== language) }))} />{codingLanguages.language_labels?.[language] || language}</label>)}</div></div>
+        <div className="form-grid"><label>Time limit (seconds)<input type="number" min="60" max="7200" value={codingQuestionForm.time_limit_seconds} onChange={event => setCodingQuestionForm({ ...codingQuestionForm, time_limit_seconds: event.target.value })} /></label>
+          <label>Private test cases (JSON)<small>At least one input and expected_output pair is required</small><textarea required rows="4" value={codingQuestionForm.test_cases} onChange={event => setCodingQuestionForm({ ...codingQuestionForm, test_cases: event.target.value })} /></label></div>
+        <button className="button button-primary" disabled={codingQuestionBusy || !codingQuestionForm.allowed_languages.length}>{codingQuestionBusy ? "Saving question…" : "Save to question bank"}</button>
+      </form>
+      {codingQuestions.length > 0 && <div className="coding-bank-list">{codingQuestions.map(question => <details className="coding-bank-item" key={question.id}><summary><span>{question.question.slice(0, 110)}{question.question.length > 110 ? "…" : ""}</span><small>{question.test_case_count} tests · {Math.floor(question.time_limit_seconds / 60)} min</small></summary><p>{question.question}</p><small>{question.allowed_languages.map(language => codingLanguages.language_labels?.[language] || language).join(" · ")}</small></details>)}</div>}
+    </section>}
+    {!codingBankOnly && (items.length ? <div className="interview-list">{items.map(interview => <section className="panel interview-card" key={interview.id}>
       <div className="panel-heading"><div><span className="eyebrow">{interview.interview_type} · {interview.mode}</span><h3>{interview.job?.title || "Interview"}</h3></div><span className={"status status-" + interview.status}>{interview.status}</span></div>
       <p><b>{new Date(interview.scheduled_at).toLocaleString()}</b> · {interview.duration_minutes} minutes</p>
       {interview.mode === "in_platform" && <Link className="button button-primary" to={`${isRecruiter ? "/recruiter" : "/candidate"}/interviews/${interview.id}/room`}>{interview.status === "completed" ? "View interview report" : isRecruiter && interview.status === "scheduled" ? "Open and start SkillSphere room" : "Join SkillSphere room"}</Link>}
@@ -994,7 +1050,7 @@ function InterviewManagementPage() {
         {form.mode === "offline" ? <label className="wide-field">Location<input required value={form.location} onChange={event => setForm({ ...form, location: event.target.value })} /></label> : <p className="wide-field">The candidate joins directly from SkillSphere. No external meeting link is used.</p>}
         <label className="wide-field">Notes<textarea rows="3" value={form.notes} onChange={event => setForm({ ...form, notes: event.target.value })} /></label>
       </div><button className="button button-primary">Save reschedule</button><button type="button" className="button button-outline" onClick={() => setReschedulingId("")}>Keep current time</button></form>}
-    </section>)}</div> : <section className="panel"><Empty title="No interviews scheduled" text="Interview invitations and scheduled details will appear here." /></section>}
+    </section>)}</div> : <section className="panel"><Empty title="No interviews scheduled" text="Interview invitations and scheduled details will appear here." /></section>)}
   </>;
 }
 function TrendChart({ title, data = [] }) {
@@ -1696,7 +1752,7 @@ export default function App() {
     <Route path="/dashboard" element={<Protected><RoleHome /></Protected>} />
     <Route path="/candidate" element={<Protected roles={["candidate"]}><CandidateDashboardLayout /></Protected>}><Route index element={<DashboardHome />} /><Route path="profile" element={<ProfilePage />} /><Route path="notifications" element={<NotificationsPage />} /><Route path="resume" element={<ResumePage />} /><Route path="jobs" element={<JobsPage />} /><Route path="saved" element={<SavedJobsPage />} /><Route path="applications" element={<ApplicationsPage />} /><Route path="applications/:applicationId" element={<CandidateApplicationDetailPage />} /><Route path="assessments" element={<AssessmentListPage audience="candidate" />} /><Route path="assessments/:assessmentId" element={<AssessmentDetailPage audience="candidate" />} /><Route path="interviews" element={<InterviewManagementPage />} /><Route path="analysis" element={<AnalysisPage />} /><Route path="settings" element={<SettingsPage />} /></Route>
     <Route path="/candidate/interviews/:interviewId/room" element={<Protected roles={["candidate"]}><Suspense fallback={<div className="page-loading">Loading interview room…</div>}><InterviewRoom audience="candidate" /></Suspense></Protected>} />
-    <Route path="/recruiter" element={<Protected roles={["recruiter"]}><DashboardLayout /></Protected>}><Route index element={<DashboardHome />} /><Route path="company" element={<CompanyPage />} /><Route path="notifications" element={<NotificationsPage />} /><Route path="jobs" element={<RecruiterJobsPage />} /><Route path="applicants" element={<ApplicantsPage />} /><Route path="applicants/:applicationId" element={<ApplicantDetailPage />} /><Route path="assessments" element={<RecruiterAssessments />} /><Route path="question-bank" element={<RecruiterAssessments questionBankOnly />} /><Route path="assessments/:assessmentId" element={<AssessmentDetailPage audience="recruiter" />} /><Route path="interviews" element={<InterviewManagementPage />} /><Route path="settings" element={<SettingsPage />} /></Route>
+    <Route path="/recruiter" element={<Protected roles={["recruiter"]}><DashboardLayout /></Protected>}><Route index element={<DashboardHome />} /><Route path="company" element={<CompanyPage />} /><Route path="notifications" element={<NotificationsPage />} /><Route path="jobs" element={<RecruiterJobsPage />} /><Route path="applicants" element={<ApplicantsPage />} /><Route path="applicants/:applicationId" element={<ApplicantDetailPage />} /><Route path="assessments" element={<RecruiterAssessments />} /><Route path="question-bank" element={<RecruiterAssessments questionBankOnly />} /><Route path="coding-question-bank" element={<InterviewManagementPage codingBankOnly />} /><Route path="assessments/:assessmentId" element={<AssessmentDetailPage audience="recruiter" />} /><Route path="interviews" element={<InterviewManagementPage />} /><Route path="settings" element={<SettingsPage />} /></Route>
     <Route path="/recruiter/interviews/:interviewId/room" element={<Protected roles={["recruiter"]}><Suspense fallback={<div className="page-loading">Loading interview room…</div>}><InterviewRoom audience="recruiter" /></Suspense></Protected>} />
     <Route path="/admin" element={<Protected roles={["admin"]}><DashboardLayout /></Protected>}><Route index element={<AdminPage />} /><Route path="notifications" element={<NotificationsPage />} /><Route path="users" element={<AdminPage mode="users" />} /><Route path="jobs" element={<AdminPage mode="jobs" />} /><Route path="companies" element={<AdminPage mode="companies" />} /><Route path="proctoring" element={<AdminProctoring />} /><Route path="settings" element={<SettingsPage />} /></Route>
     <Route path="*" element={<Navigate to="/home" replace />} />

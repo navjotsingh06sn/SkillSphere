@@ -130,8 +130,10 @@ def send_smtp_email_sync(
                 server = None
             if attempt == 1:
                 raise EmailDeliveryError(
-                    "SMTP server could not be reached after one retry. "
-                    "Check backend internet access, firewall/VPN rules, and the configured SMTP host and port."
+                    f"Could not connect to SMTP server {host}:{settings.smtp_port}. "
+                    "If this backend runs on Render Free, outbound SMTP ports 25, 465, and 587 are blocked. "
+                    "Configure RESEND_API_KEY and RESEND_FROM_EMAIL for HTTPS email delivery, "
+                    "or use a paid Render service with SMTP enabled."
                 ) from exc
             time.sleep(1)
         except Exception as exc:

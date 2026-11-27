@@ -502,6 +502,17 @@ body { background-image: radial-gradient(ellipse at 6% 3%, color-mix(in srgb, va
 .interview-list { display: grid; gap: 2px; }
 .interview-card > p { color: var(--muted); font-size: 11px; line-height: 1.6; }
 .interview-card a:not(.button) { color: var(--accent); }
+.coding-bank-manager { margin-bottom: 16px; }
+.coding-bank-manager > p { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.coding-language-checklist { display: grid; gap: 8px; }
+.coding-language-checklist > div { display: flex; flex-wrap: wrap; gap: 8px; }
+.coding-language-checklist label { display: inline-flex; align-items: center; gap: 6px; padding: 7px 9px; border: 1px solid var(--border); border-radius: 9px; color: var(--text); background: var(--surface); font-size: 11px; }
+.coding-language-checklist input { accent-color: var(--accent); }
+.coding-bank-list { display: grid; gap: 8px; margin-top: 16px; }
+.coding-bank-item { padding: 11px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.coding-bank-item summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; font-size: 12px; }
+.coding-bank-item summary small, .coding-bank-item > small { color: var(--muted); font-size: 10px; }
+.coding-bank-item > p { margin: 12px 0; white-space: pre-wrap; font-size: 12px; line-height: 1.6; }
 .notification-row > div > a { display: inline-block; margin-top: 7px; color: var(--accent); font-size: 10px; }
 @media (max-width: 760px) {
   .applicant-filters { grid-template-columns: 1fr; }
@@ -757,7 +768,7 @@ body { background-image: radial-gradient(ellipse at 6% 3%, color-mix(in srgb, va
 .room-live-dot.room-live { background: #31a46c; box-shadow: 0 0 0 4px color-mix(in srgb, #31a46c 18%, transparent); }
 .interview-room-main { width: min(1500px, 100%); margin: auto; padding: 0 16px; }
 .interview-room-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 290px); gap: 15px; align-items: start; }
-.room-media-panel, .room-participants-panel, .room-coding-panel, .room-events-panel, .room-feedback-form { min-width: 0; }
+.room-media-panel, .room-participants-panel, .room-coding-panel, .room-events-panel { min-width: 0; }
 .room-video-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .room-video-tile { position: relative; overflow: hidden; min-height: 230px; border-radius: 12px; background: #171411; }
 .room-video-tile video { display: block; width: 100%; height: 100%; min-height: 230px; object-fit: cover; }
@@ -799,6 +810,14 @@ body { background-image: radial-gradient(ellipse at 6% 3%, color-mix(in srgb, va
 .room-problem-choice, .room-submission-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
 .room-problem-choice > span, .room-submission-row > span, .room-submission-row > time { color: var(--muted); font-size: 12px; }
 .room-problem-choice > button { margin-left: auto; }
+.room-problem-choice .room-question-preview { flex: 1 1 100%; color: var(--text); white-space: pre-wrap; line-height: 1.55; }
+.room-submission-detail { display: grid; gap: 10px; padding: 13px 0; border-bottom: 1px solid var(--border); }
+.room-submission-detail > summary { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; cursor: pointer; }
+.room-submission-detail > summary span, .room-submission-detail > summary time { color: var(--muted); font-size: 11px; }
+.room-submission-detail > p { margin: 0; white-space: pre-wrap; font-size: 12px; line-height: 1.55; }
+.room-submission-detail > details > summary { cursor: pointer; color: var(--accent); font-size: 11px; }
+.room-submitted-code { max-height: 360px; overflow: auto; padding: 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-2); white-space: pre-wrap; font-size: 11px; }
+.room-submission-tests { display: grid; gap: 7px; }
 .room-problem-form { display: grid; gap: 12px; margin: 16px 0; }
 .room-event-list { display: grid; gap: 7px; margin: 0; padding-left: 22px; }
 .room-event-list li { display: grid; grid-template-columns: minmax(110px, auto) 1fr; gap: 8px; border-bottom: 1px solid var(--border); padding: 9px 0; font-size: 12px; }

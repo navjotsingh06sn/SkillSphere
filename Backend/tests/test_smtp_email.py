@@ -75,6 +75,22 @@ class SMTPEmailTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(smtp.EmailDeliveryError, "SMTP_HOST"):
                 await smtp.send_smtp_email("candidate@example.test", "Subject", "Text")
 
+    async def test_unreachable_smtp_explains_render_free_block_and_https_fallback(self):
+        with (
+            patch.object(smtp.settings, "smtp_host", "smtp.gmail.com"),
+            patch.object(smtp.settings, "smtp_port", 587),
+            patch.object(smtp.settings, "smtp_from_email", "sender@example.test"),
+            patch.object(smtp.settings, "resend_api_key", ""),
+            patch.object(smtp.smtplib, "SMTP", side_effect=OSError("network unreachable")),
+            patch.object(smtp.time, "sleep"),
+        ):
+            with self.assertRaises(smtp.EmailDeliveryError) as error:
+                await smtp.send_smtp_email("candidate@example.test", "Subject", "Text")
+
+        self.assertIn("smtp.gmail.com:587", str(error.exception))
+        self.assertIn("Render Free", str(error.exception))
+        self.assertIn("RESEND_API_KEY", str(error.exception))
+
     async def test_smtps_uses_port_465_without_starttls(self):
         connection = MagicMock()
         with (

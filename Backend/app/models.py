@@ -980,7 +980,8 @@ class InterviewCodingProblem(Base):
     __table_args__ = (Index("ix_interview_coding_problem_interview", "interview_id"),)
 
     id: Mapped[uuid.UUID] = uuid_pk()
-    interview_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("interviews.id", ondelete="CASCADE"), nullable=False)
+    # NULL rows are recruiter-owned reusable coding questions; interview rows are assigned copies.
+    interview_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("interviews.id", ondelete="CASCADE"), nullable=True)
     created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     prompt: Mapped[str] = mapped_column(Text, nullable=False)
