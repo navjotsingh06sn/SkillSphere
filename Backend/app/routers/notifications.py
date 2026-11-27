@@ -71,6 +71,8 @@ async def list_notifications(
             item["application_time"] = notification.created_at.isoformat()
             if application_id is not None:
                 item["related_url"] = f"/recruiter/applicants/{application_id}"
+        elif user.get("role") == "candidate" and notification.type in {"interview_scheduled", "interview_room_started"} and notification.related_id:
+            item["related_url"] = f"/candidate/interviews/{notification.related_id}/room"
         payloads.append(item)
 
     return {

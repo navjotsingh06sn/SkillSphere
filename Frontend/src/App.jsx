@@ -1,5 +1,5 @@
 import React, { createContext, lazy, Suspense, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { ArrowDownRight, ArrowRight, Bell, BriefcaseBusiness, Building2, CalendarDays, Check, ChevronDown, CircleUserRound, Code2, Eye, EyeOff, FileText, LayoutDashboard, LockKeyhole, LogOut, Menu, Moon, Palette, Search, ShieldCheck, Sparkles, Sun, Trash2, Users, Volume2, VolumeX, X, UploadCloud } from "lucide-react";
+import { ArrowDownRight, ArrowRight, Bell, BriefcaseBusiness, Building2, CalendarDays, Check, ChevronDown, CircleUserRound, Eye, EyeOff, FileText, LayoutDashboard, LockKeyhole, LogOut, Menu, Moon, Palette, Search, ShieldCheck, Sparkles, Sun, Trash2, Users, Volume2, VolumeX, X, UploadCloud } from "lucide-react";
 import { Link, NavLink, Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, apiBlob, json } from "./api.js";
 import RecruiterAssessments from "./RecruiterAssessments.jsx";
@@ -126,8 +126,8 @@ function PublicNav() {
   </header>;
 }
 const navByRole = {
-  candidate: [["Overview", "/candidate", LayoutDashboard], ["Notifications", "/candidate/notifications", Bell], ["My profile", "/candidate/profile", CircleUserRound], ["My resume", "/candidate/resume", FileText], ["Explore jobs", "/candidate/jobs", Search], ["Saved jobs", "/candidate/saved", Check], ["Applications", "/candidate/applications", BriefcaseBusiness], ["Assessments", "/candidate/assessments", Sparkles], ["Interviews", "/candidate/interviews", CalendarDays], ["AI analysis", "/candidate/analysis", Sparkles], ["Settings", "/candidate/settings", ShieldCheck]],
-  recruiter: [["Overview", "/recruiter", LayoutDashboard], ["Notifications", "/recruiter/notifications", Bell], ["Company profile", "/recruiter/company", Building2], ["My posted jobs", "/recruiter/jobs", BriefcaseBusiness], ["Applicants", "/recruiter/applicants", Users], ["Assessments", "/recruiter/assessments", Sparkles], ["Question bank", "/recruiter/question-bank", FileText], ["Coding questions", "/recruiter/coding-question-bank", Code2], ["Interviews", "/recruiter/interviews", CalendarDays], ["Settings", "/recruiter/settings", ShieldCheck]],
+  candidate: [["Overview", "/candidate", LayoutDashboard], ["Notifications", "/candidate/notifications", Bell], ["My profile", "/candidate/profile", CircleUserRound], ["My resume", "/candidate/resume", FileText], ["Explore jobs", "/candidate/jobs", Search], ["Saved jobs", "/candidate/saved", Check], ["Applications", "/candidate/applications", BriefcaseBusiness], ["Assessments", "/candidate/assessments", Sparkles], ["AI analysis", "/candidate/analysis", Sparkles], ["Settings", "/candidate/settings", ShieldCheck]],
+  recruiter: [["Overview", "/recruiter", LayoutDashboard], ["Notifications", "/recruiter/notifications", Bell], ["Company profile", "/recruiter/company", Building2], ["My posted jobs", "/recruiter/jobs", BriefcaseBusiness], ["Applicants", "/recruiter/applicants", Users], ["Assessments", "/recruiter/assessments", Sparkles], ["Question bank", "/recruiter/question-bank", FileText], ["Interviews", "/recruiter/interviews", CalendarDays], ["Settings", "/recruiter/settings", ShieldCheck]],
   admin: [["Overview", "/admin", LayoutDashboard], ["Notifications", "/admin/notifications", Bell], ["Manage users", "/admin/users", Users], ["Moderate jobs", "/admin/jobs", BriefcaseBusiness], ["Proctoring review", "/admin/proctoring", ShieldCheck], ["Settings", "/admin/settings", ShieldCheck]],
 };
 function DashboardLayout() {
@@ -283,14 +283,12 @@ function DashboardHome() {
 }
 function Stat({ label, value, icon: Icon }) { return <div className="stat-card"><div className="stat-top"><span>{label}</span><span className="stat-icon"><Icon size={17} /></span></div><b>{value ?? 0}</b><small>From your SkillSphere activity</small></div>; }
 function CandidateHome() {
-  const [data, setData] = useState(null); const [interviews, setInterviews] = useState([]); const [error, setError] = useState("");
-  useEffect(() => {
-    api("/candidates/dashboard").then(setData).catch(e => setError(e.message));
-    api("/interviews").then(setInterviews).catch(e => setError(e.message));
-  }, []);
+  const [data, setData] = useState(null); const [error, setError] = useState("");
+  useEffect(() => { api("/candidates/dashboard").then(setData).catch(e => setError(e.message)); }, []);
   if (!data && !error) return <Loading />;
   return <><PageHeader eyebrow="YOUR CAREER SPACE" title="Good to see you." description="A clear view of what’s moving and where to go next." action={<Link className="button button-primary" to="/candidate/jobs">Explore jobs <ArrowRight size={16} /></Link>} /><Notice>{error}</Notice>
-    {data && <><div className="stat-grid"><Stat label="Applications" value={data.total_applications} icon={BriefcaseBusiness} /><Stat label="In progress" value={data.pending_applications} icon={ArrowDownRight} /><Stat label="Shortlisted" value={data.shortlisted} icon={Check} /><Stat label="Interviews" value={data.interviews} icon={Users} /></div>{interviews.some(item => item.status === "scheduled") && <section className="panel"><div className="panel-heading"><div><span className="eyebrow">UPCOMING</span><h3>Scheduled interviews</h3></div><Link to="/candidate/interviews">View interviews <ArrowRight size={14} /></Link></div><div className="activity-list">{interviews.filter(item => item.status === "scheduled").slice(0, 3).map(item => <div className="activity-row" key={item.id}><span className="company-tile small-tile"><CalendarDays size={16} /></span><div><b>{item.job?.title || "Interview"}</b><small>{new Date(item.scheduled_at).toLocaleString()} · {item.duration_minutes} minutes</small></div><span className="status status-shortlisted">{item.candidate_response}</span></div>)}</div></section>}<div className="content-grid"><section className="panel"><div className="panel-heading"><div><span className="eyebrow">YOUR ACTIVITY</span><h3>Recent applications</h3></div><Link to="/candidate/applications">See all <ArrowRight size={14} /></Link></div>{data.recent_applications.length ? <div className="activity-list">{data.recent_applications.map(item => <div className="activity-row" key={item.id}><span className="company-tile small-tile"><BriefcaseBusiness size={16} /></span><div><b>Application update</b><small>{item.job_title || "Job application"} · {item.status.replaceAll("_", " ")} · {new Date(item.applied_at).toLocaleDateString()}</small>{(item.experience_requirement || item.expected_salary) && <small>{[item.experience_requirement, item.expected_salary].filter(Boolean).join(" · ")}</small>}</div><span className={"status status-" + item.status}>{item.status.replaceAll("_", " ")}</span></div>)}</div> : <Empty title="Your next move starts here" text="Find a role that fits your skills and send your first application." action={<Link className="button button-outline" to="/candidate/jobs">Browse roles</Link>} />}</section><section className="panel completion-panel"><span className="eyebrow">PROFILE STRENGTH</span><div className="completion-ring" style={{ "--progress": data.profile_completion + "%" }}><div><b>{data.profile_completion}%</b><small>complete</small></div></div><h3>Give your profile a little polish.</h3><p>A complete profile helps recruiters understand your experience.</p><Link to="/candidate/profile">Update profile <ArrowRight size={15} /></Link></section></div><section className="panel"><div className="panel-heading"><div><span className="eyebrow">BASED ON YOUR PROFILE</span><h3>Recommended roles</h3></div><Link to="/candidate/jobs">Browse all <ArrowRight size={14} /></Link></div>{data.recommended_jobs.length ? <div className="recommended-list">{data.recommended_jobs.map(job => <Link className="recommended-job" key={job.id} to={"/jobs/" + job.id}><span className="company-tile small-tile">{(job.company_name || "S").slice(0, 1)}</span><span><b>{job.title}</b><small>{[job.company_name, job.location, job.experience_requirement, job.expected_salary].filter(Boolean).join(" · ")}</small></span>{job.match_percentage === null ? <span className="status">No skill score</span> : <span className="status status-shortlisted">{job.match_percentage}% match</span>}</Link>)}</div> : <Empty title="No roles to recommend yet" text="Published roles will appear here when they match your profile." />}</section></>}</>;
+    {data && <><div className="stat-grid"><Stat label="Applications" value={data.total_applications} icon={BriefcaseBusiness} /><Stat label="In progress" value={data.pending_applications} icon={ArrowDownRight} /><Stat label="Shortlisted" value={data.shortlisted} icon={Check} /></div><div className="content-grid"><section className="panel"><div className="panel-heading"><div><span className="eyebrow">YOUR ACTIVITY</span><h3>Recent applications</h3></div><Link to="/candidate/applications">See all <ArrowRight size={14} /></Link></div>{data.recent_applications.length ? <div className="activity-list">{data.recent_applications.map(item => <div className="activity-row" key={item.id}><span className="company-tile small-tile"><BriefcaseBusiness size={16} /></span><div><b>Application update</b><small>{item.job_title || "Job application"} · {item.status.replaceAll("_", " ")} · {new Date(item.applied_at).toLocaleDateString()}</small>{(item.experience_requirement || item.expected_salary) && <small>{[item.experience_requirement, item.expected_salary].filter(Boolean).join(" · ")}</small>}</div><span className={"status status-" + item.status}>{item.status.replaceAll("_", " ")}</span></div>)}</div> : <Empty title="Your next move starts here" text="Find a role that fits your skills and send your first application." action={<Link className="button button-outline" to="/candidate/jobs">Browse roles</Link>} />}</section><section className="panel completion-panel"><span className="eyebrow">PROFILE STRENGTH</span><div className="completion-ring" style={{ "--progress": data.profile_completion + "%" }}><div><b>{data.profile_completion}%</b><small>complete</small></div></div><h3>Give your profile a little polish.</h3><p>A complete profile helps recruiters understand your experience.</p><Link to="/candidate/profile">Update profile <ArrowRight size={15} /></Link></section></div><section className="panel"><div className="panel-heading"><div><span className="eyebrow">BASED ON YOUR PROFILE</span><h3>Recommended roles</h3></div><Link to="/candidate/jobs">Browse all <ArrowRight size={14} /></Link></div>{data.recommended_jobs.length ? <div className="recommended-list">{data.recommended_jobs.map(job => <Link className="recommended-job" key={job.id} to={"/jobs/" + job.id}><span className="company-tile small-tile">{(job.company_name || "S").slice(0, 1)}</span><span><b>{job.title}</b><small>{[job.company_name, job.location, job.experience_requirement, job.expected_salary].filter(Boolean).join(" · ")}</small></span>{job.match_percentage === null ? <span className="status">No skill score</span> : <span className="status status-shortlisted">{job.match_percentage}% match</span>}</Link>)}</div> : <Empty title="No roles to recommend yet" text="Published roles will appear here when they match your profile." />}</section></>}
+  </>;
 }
 function RecruiterHome() {
   const [data, setData] = useState(null); const [error, setError] = useState("");
@@ -892,166 +890,94 @@ function ApplicantDetailPage() {
   </>;
 }
 
-function InterviewManagementPage({ codingBankOnly = false }) {
-  const { user } = useAuth();
-  const isRecruiter = user?.role === "recruiter";
+function InterviewManagementPage() {
   const [items, setItems] = useState([]);
   const [error, setError] = useState("");
   const [reschedulingId, setReschedulingId] = useState("");
   const [form, setForm] = useState({ scheduled_at: "", duration_minutes: "30", mode: "in_platform", meeting_link: "", location: "", notes: "" });
-  const [codingQuestions, setCodingQuestions] = useState([]);
-  const [codingLanguages, setCodingLanguages] = useState({ language_ids: {}, language_labels: {} });
-  const [codingQuestionForm, setCodingQuestionForm] = useState({ question: "", allowed_languages: ["python", "javascript"], time_limit_seconds: "1800" });
-  const [codingQuestionBusy, setCodingQuestionBusy] = useState(false);
 
   async function load() {
-    try {
-      setItems(await api("/interviews"));
-      setError("");
-    } catch (err) {
-      setError(err.message);
-    }
-    if (isRecruiter) {
-      try {
-        const [questions, languages] = await Promise.all([
-          api("/interviews/coding-question-bank"),
-          api("/interviews/coding-languages"),
-        ]);
-        setCodingQuestions(questions);
-        setCodingLanguages(languages);
-        setCodingQuestionForm(current => ({
-          ...current,
-          allowed_languages: current.allowed_languages.filter(language => languages.language_ids[language]).length
-            ? current.allowed_languages.filter(language => languages.language_ids[language])
-            : Object.keys(languages.language_ids).slice(0, 2),
-        }));
-      } catch (err) {
-        setError(err.message);
-      }
-    }
+    try { setItems(await api("/interviews")); setError(""); }
+    catch (err) { setError(err.message); }
   }
   useEffect(() => { load(); }, []);
-
-  async function saveCodingQuestion(event) {
-    event.preventDefault();
-    setCodingQuestionBusy(true);
-    setError("");
-    try {
-      const saved = await api("/interviews/coding-question-bank", {
-        method: "POST",
-        body: json({
-          ...codingQuestionForm,
-          time_limit_seconds: Number(codingQuestionForm.time_limit_seconds),
-        }),
-      });
-      setCodingQuestions(current => [saved, ...current]);
-      setCodingQuestionForm(current => ({ ...current, question: "" }));
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setCodingQuestionBusy(false);
-    }
-  }
-
-  async function respond(interview, response) {
-    try {
-      await api("/interviews/" + interview.id + "/response", { method: "PUT", body: json({ response }) });
-      await load();
-    } catch (err) {
-      setError(err.message);
-    }
-  }
 
   function startReschedule(interview) {
     const date = new Date(interview.scheduled_at);
     date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
-    setForm({
-      scheduled_at: date.toISOString().slice(0, 16),
-      duration_minutes: String(interview.duration_minutes),
-      mode: interview.mode === "offline" ? "offline" : "in_platform",
-      meeting_link: "",
-      location: interview.location || "",
-      notes: interview.notes || "",
-    });
+    setForm({ scheduled_at: date.toISOString().slice(0, 16), duration_minutes: String(interview.duration_minutes), mode: interview.mode === "offline" ? "offline" : "in_platform", meeting_link: "", location: interview.location || "", notes: interview.notes || "" });
     setReschedulingId(interview.id);
   }
-
   async function reschedule(event, interview) {
     event.preventDefault();
     try {
-      await api("/interviews/" + interview.id + "/reschedule", {
-        method: "PUT",
-        body: json({
-          ...form,
-          scheduled_at: new Date(form.scheduled_at).toISOString(),
-          duration_minutes: Number(form.duration_minutes),
-          meeting_link: form.mode === "online" ? form.meeting_link : null,
-          location: form.mode === "offline" ? form.location : null,
-        }),
-      });
-      setReschedulingId("");
-      await load();
-    } catch (err) {
-      setError(err.message);
-    }
+      await api(`/interviews/${interview.id}/reschedule`, { method: "PUT", body: json({ ...form, scheduled_at: new Date(form.scheduled_at).toISOString(), duration_minutes: Number(form.duration_minutes), meeting_link: null, location: form.mode === "offline" ? form.location : null }) });
+      setReschedulingId(""); await load();
+    } catch (err) { setError(err.message); }
   }
-
   async function cancel(interview) {
     if (!window.confirm("Cancel this interview and notify the candidate?")) return;
-    try {
-      await api("/interviews/" + interview.id + "/cancel", { method: "PUT" });
-      await load();
-    } catch (err) {
-      setError(err.message);
-    }
+    try { await api(`/interviews/${interview.id}/cancel`, { method: "PUT" }); await load(); }
+    catch (err) { setError(err.message); }
   }
-
   async function resendEmail(interview) {
-    try {
-      await api(`/interviews/${interview.id}/email/resend`, { method: "POST" });
-      await load();
-    } catch (err) {
-      setError(err.message);
-    }
+    try { await api(`/interviews/${interview.id}/email/resend`, { method: "POST" }); await load(); }
+    catch (err) { setError(err.message); }
   }
 
   return <>
-    <PageHeader eyebrow={codingBankOnly ? "CODING QUESTION BANK" : "INTERVIEW MANAGEMENT"} title={codingBankOnly ? "Your reusable coding questions." : isRecruiter ? "Your scheduled interviews." : "Your interviews."} description={codingBankOnly ? "Build coding questions once, then send them directly to shortlisted candidates in a live interview." : isRecruiter ? "Reschedule or cancel interviews and keep candidates updated." : "Review the details of your interviews and accept or decline invitations."} />
+    <PageHeader eyebrow="INTERVIEW MANAGEMENT" title="Your scheduled interviews." description="Manage interview times, open live rooms, and review reports." />
     <Notice>{error}</Notice>
-    {isRecruiter && <section className="panel coding-bank-manager">
-      <div className="panel-heading"><div><span className="eyebrow">REUSABLE LIVE CODING</span><h3>Coding question bank</h3></div><span className="status status-shortlisted">{codingQuestions.length} saved</span></div>
-      <p>Write a question once and reuse it in any shortlisted candidate’s live interview room. Candidates run their code directly and recruiters can review the output.</p>
-      <form className="edit-form" onSubmit={saveCodingQuestion}>
-        <label>Question<textarea required minLength="10" maxLength="12000" rows="5" placeholder="Write the coding question exactly as the candidate should see it" value={codingQuestionForm.question} onChange={event => setCodingQuestionForm({ ...codingQuestionForm, question: event.target.value })} /></label>
-        <div className="coding-language-checklist"><b>Allowed languages</b><div>{Object.keys(codingLanguages.language_ids || {}).map(language => <label key={language}><input type="checkbox" checked={codingQuestionForm.allowed_languages.includes(language)} onChange={event => setCodingQuestionForm(current => ({ ...current, allowed_languages: event.target.checked ? [...current.allowed_languages, language] : current.allowed_languages.filter(item => item !== language) }))} />{codingLanguages.language_labels?.[language] || language}</label>)}</div></div>
-        <label>Time limit (seconds)<input type="number" min="60" max="7200" value={codingQuestionForm.time_limit_seconds} onChange={event => setCodingQuestionForm({ ...codingQuestionForm, time_limit_seconds: event.target.value })} /></label>
-        <button className="button button-primary" disabled={codingQuestionBusy || !codingQuestionForm.allowed_languages.length}>{codingQuestionBusy ? "Saving question…" : "Save to question bank"}</button>
-      </form>
-      {codingQuestions.length > 0 && <div className="coding-bank-list">{codingQuestions.map(question => <details className="coding-bank-item" key={question.id}><summary><span>{question.question.slice(0, 110)}{question.question.length > 110 ? "…" : ""}</span><small>{Math.floor(question.time_limit_seconds / 60)} min</small></summary><p>{question.question}</p><small>{question.allowed_languages.map(language => codingLanguages.language_labels?.[language] || language).join(" · ")}</small></details>)}</div>}
-    </section>}
-    {!codingBankOnly && (items.length ? <div className="interview-list">{items.map(interview => <section className="panel interview-card" key={interview.id}>
-      <div className="panel-heading"><div><span className="eyebrow">{interview.interview_type} · {interview.mode}</span><h3>{interview.job?.title || "Interview"}</h3></div><span className={"status status-" + interview.status}>{interview.status}</span></div>
-      <p><b>{new Date(interview.scheduled_at).toLocaleString()}</b> · {interview.duration_minutes} minutes</p>
-      {interview.mode === "in_platform" && <Link className="button button-primary" to={`${isRecruiter ? "/recruiter" : "/candidate"}/interviews/${interview.id}/room`}>{interview.status === "completed" ? "View interview report" : isRecruiter && interview.status === "scheduled" ? "Open and start SkillSphere room" : "Join SkillSphere room"}</Link>}
-      {interview.location && <p>Location: {interview.location}</p>}
-      {interview.notes && <p>{interview.notes}</p>}
-      {isRecruiter && <p>Email delivery: <b>{interview.email_status || "pending"}</b>{interview.email_attempts ? ` · ${interview.email_attempts} attempt(s)` : ""}</p>}
-      {isRecruiter && interview.email_error && <p className="notice">{interview.email_error}</p>}
-      <p>Candidate response: {interview.candidate_response}</p>
-      {!isRecruiter && interview.status === "scheduled" && interview.candidate_response === "pending" && <div className="applicant-action-buttons"><button className="button button-primary" onClick={() => respond(interview, "accepted")}>Accept invitation</button><button className="button button-outline" onClick={() => respond(interview, "declined")}>Decline invitation</button></div>}
-      {isRecruiter && interview.email_status === "failed" && <button className="button button-outline" onClick={() => resendEmail(interview)}>Resend failed email</button>}
-      {isRecruiter && interview.status === "scheduled" && <div className="applicant-action-buttons"><button className="button button-outline" onClick={() => startReschedule(interview)}>Reschedule</button><button className="button button-outline danger-text" onClick={() => cancel(interview)}>Cancel interview</button></div>}
-      {isRecruiter && reschedulingId === interview.id && <form className="edit-form interview-form" onSubmit={event => reschedule(event, interview)}><div className="form-grid">
-        <label>New date and time<input required type="datetime-local" value={form.scheduled_at} onChange={event => setForm({ ...form, scheduled_at: event.target.value })} /></label>
-        <label>Duration (minutes)<input required type="number" min="15" max="240" value={form.duration_minutes} onChange={event => setForm({ ...form, duration_minutes: event.target.value })} /></label>
-        <label>Mode<select value={form.mode} onChange={event => setForm({ ...form, mode: event.target.value })}><option value="in_platform">SkillSphere live room</option><option value="offline">In person</option></select></label>
-        {form.mode === "offline" ? <label className="wide-field">Location<input required value={form.location} onChange={event => setForm({ ...form, location: event.target.value })} /></label> : <p className="wide-field">The candidate joins directly from SkillSphere. No external meeting link is used.</p>}
-        <label className="wide-field">Notes<textarea rows="3" value={form.notes} onChange={event => setForm({ ...form, notes: event.target.value })} /></label>
-      </div><button className="button button-primary">Save reschedule</button><button type="button" className="button button-outline" onClick={() => setReschedulingId("")}>Keep current time</button></form>}
-    </section>)}</div> : <section className="panel"><Empty title="No interviews scheduled" text="Interview invitations and scheduled details will appear here." /></section>)}
+    {items.length ? <div className="interview-list">{items.map(interview => <section className="panel interview-card" key={interview.id}>
+      <div className="panel-heading"><div><span className="eyebrow">{interview.interview_type || "Interview"} · {interview.mode || "in platform"}</span><h3>{interview.job?.title || "Interview"}</h3></div><span className={"status status-" + (interview.status || "scheduled")}>{(interview.status || "scheduled").replaceAll("_", " ")}</span></div>
+      <p><b>{interview.scheduled_at ? new Date(interview.scheduled_at).toLocaleString() : "Time not set"}</b> · {interview.duration_minutes || 30} minutes</p>
+      {interview.status === "completed" ? <Link className="button button-primary" to={`/recruiter/interviews/${interview.id}/report`}>View interview report</Link> : interview.mode !== "offline" && ["scheduled", "in_progress"].includes(interview.status) ? <Link className="button button-primary" to={`/recruiter/interviews/${interview.id}/room`}>{interview.status === "in_progress" ? "Open live room" : "Open and start SkillSphere room"}</Link> : null}
+      {interview.location && <p>Location: {interview.location}</p>}{interview.notes && <p>{interview.notes}</p>}
+      <p>Email delivery: <b>{interview.email_status || "pending"}</b>{interview.email_attempts ? ` · ${interview.email_attempts} attempt(s)` : ""}</p>
+      {interview.email_error && <Notice>{interview.email_error}</Notice>}
+      <p>Candidate response: {interview.candidate_response || "pending"}</p>
+      {interview.email_status === "failed" && <button className="button button-outline" onClick={() => resendEmail(interview)}>Resend failed email</button>}
+      {interview.status === "scheduled" && <div className="applicant-action-buttons"><button className="button button-outline" onClick={() => startReschedule(interview)}>Reschedule</button><button className="button button-outline danger-text" onClick={() => cancel(interview)}>Cancel interview</button></div>}
+      {reschedulingId === interview.id && <form className="edit-form interview-form" onSubmit={event => reschedule(event, interview)}><div className="form-grid"><label>New date and time<input required type="datetime-local" value={form.scheduled_at} onChange={event => setForm({ ...form, scheduled_at: event.target.value })} /></label><label>Duration (minutes)<input required type="number" min="15" max="240" value={form.duration_minutes} onChange={event => setForm({ ...form, duration_minutes: event.target.value })} /></label><label>Mode<select value={form.mode} onChange={event => setForm({ ...form, mode: event.target.value })}><option value="in_platform">SkillSphere live room</option><option value="offline">In person</option></select></label>{form.mode === "offline" ? <label className="wide-field">Location<input required value={form.location} onChange={event => setForm({ ...form, location: event.target.value })} /></label> : <p className="wide-field">The candidate joins directly from SkillSphere.</p>}<label className="wide-field">Notes<textarea rows="3" value={form.notes} onChange={event => setForm({ ...form, notes: event.target.value })} /></label></div><button className="button button-primary">Save reschedule</button><button type="button" className="button button-outline" onClick={() => setReschedulingId("")}>Keep current time</button></form>}
+    </section>)}</div> : <section className="panel"><Empty title="No interviews scheduled" text="Interviews you schedule will appear here." /></section>}
   </>;
 }
-function TrendChart({ title, data = [] }) {
+
+function InterviewReportPage() {
+  const { interviewId } = useParams();
+  const [room, setRoom] = useState(null);
+  const [events, setEvents] = useState([]);
+  const [submissions, setSubmissions] = useState([]);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState({ rating: 4, recommendation: "yes", strengths: "", improvement_areas: "", private_notes: "" });
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([api(`/interviews/${interviewId}/room`), api(`/interviews/${interviewId}/room/activity`), api(`/interviews/${interviewId}/room/submissions`)]).then(([roomData, activity, code]) => {
+      if (cancelled) return;
+      if (roomData.role !== "recruiter") throw new Error("Interview reports are only available to the recruiter.");
+      setRoom(roomData); setEvents([...(activity || [])].sort((a, b) => new Date(a.occurred_at) - new Date(b.occurred_at))); setSubmissions((code || []).map(item => ({ ...item, result: item.result || {} })));
+      if (roomData.feedback) setFeedback({ rating: roomData.feedback.rating || 4, recommendation: roomData.feedback.recommendation || "yes", strengths: roomData.feedback.strengths || "", improvement_areas: roomData.feedback.improvement_areas || "", private_notes: roomData.feedback.private_notes || "" });
+    }).catch(err => { if (!cancelled) setError(err.message); });
+    return () => { cancelled = true; };
+  }, [interviewId]);
+
+  async function saveFeedback(event) {
+    event.preventDefault(); setSaving(true); setError("");
+    try { const saved = await api(`/interviews/${interviewId}/room/feedback`, { method: "PUT", body: json({ ...feedback, rating: Number(feedback.rating) }) }); setFeedback(current => ({ ...current, ...saved })); }
+    catch (err) { setError(err.message); }
+    finally { setSaving(false); }
+  }
+
+  if (!room && !error) return <><PageHeader eyebrow="INTERVIEW REPORT" title="Loading report…" /><Loading /></>;
+  return <><PageHeader eyebrow="INTERVIEW REPORT" title="Candidate interview report" description={room ? `${room.candidate?.full_name || "Candidate"} · ${room.job_title || "Interview"}` : "The interview report could not be loaded."} action={<Link className="button button-outline" to="/recruiter/interviews">Back to interviews</Link>} /><Notice>{error}</Notice>{room && <>
+    <section className="panel"><div className="panel-heading"><div><span className="eyebrow">SESSION</span><h3>{room.interview_type || "Interview"}</h3></div><span className={"status status-" + (room.status || "unknown")}>{(room.status || "unknown").replaceAll("_", " ")}</span></div><p>{room.scheduled_at ? new Date(room.scheduled_at).toLocaleString() : "Schedule unavailable"} · {room.duration_minutes || 30} minutes</p><p>Candidate: <b>{room.candidate?.full_name || "Candidate"}</b></p></section>
+    <section className="panel"><span className="eyebrow">BROWSER ACTIVITY</span><h3>{events.length} review signal(s)</h3><p>These browser-observable events are review signals, not proof of misconduct.</p>{events.length ? <ol className="room-event-list">{events.map(event => <li key={event.id}><time>{new Date(event.occurred_at).toLocaleString()}</time><b>{(event.event_type || "activity").replaceAll("_", " ")}</b></li>)}</ol> : <p>No activity signals were recorded.</p>}</section>
+    <section className="panel"><span className="eyebrow">CODING RESULTS</span><h3>Candidate submissions</h3>{submissions.length ? submissions.map(item => <details className="room-submission-detail" key={item.id}><summary><b>{item.language} {item.is_final ? "· Final submission" : "· Run"}</b><span>{item.result?.status || "Previous saved result"}</span><time>{new Date(item.created_at).toLocaleString()}</time></summary><p><b>Question:</b> {item.question}</p>{item.result?.stdout && <pre>Output: {item.result.stdout}</pre>}{item.result?.stderr && <pre>{item.result.stderr}</pre>}<details><summary>View submitted code</summary><pre className="room-submitted-code">{item.source_code}</pre></details></details>) : <p>No code was submitted during this interview.</p>}</section>
+    <section className="panel"><span className="eyebrow">RECRUITER EVALUATION</span><h3>Interview feedback</h3><form className="edit-form interview-form" onSubmit={saveFeedback}><div className="form-grid"><label>Rating<select value={feedback.rating} onChange={event => setFeedback({ ...feedback, rating: event.target.value })}>{[1,2,3,4,5].map(value => <option key={value} value={value}>{value}</option>)}</select></label><label>Recommendation<select value={feedback.recommendation} onChange={event => setFeedback({ ...feedback, recommendation: event.target.value })}><option value="strong_yes">Strong yes</option><option value="yes">Yes</option><option value="undecided">Undecided</option><option value="no">No</option></select></label><label>Strengths<textarea rows="3" maxLength="5000" value={feedback.strengths} onChange={event => setFeedback({ ...feedback, strengths: event.target.value })} /></label><label>Areas to improve<textarea rows="3" maxLength="5000" value={feedback.improvement_areas} onChange={event => setFeedback({ ...feedback, improvement_areas: event.target.value })} /></label><label className="wide-field">Private recruiter notes<textarea rows="3" maxLength="10000" value={feedback.private_notes} onChange={event => setFeedback({ ...feedback, private_notes: event.target.value })} /></label></div><button className="button button-primary" disabled={saving}>{saving ? "Saving…" : "Save evaluation"}</button></form></section>
+  </>}</>;
+}function TrendChart({ title, data = [] }) {
   const max = Math.max(1, ...data.map(point => point.count));
   return <section className="panel trend-panel"><div className="panel-heading"><div><span className="eyebrow">LAST SIX MONTHS</span><h3>{title}</h3></div></div>{data.length ? <div className="chart-bars">{data.map(point => <div className="chart-column" key={point.month} title={point.month + ": " + point.count}><div className="chart-track"><i style={{ height: (point.count / max * 100) + "%" }} /></div><small>{point.month.slice(5)}</small><b>{point.count}</b></div>)}</div> : <div className="chart-empty">No records in this period yet.</div>}</section>;
 }
@@ -1748,9 +1674,9 @@ export default function App() {
     <Route path="/" element={<Navigate to="/home" replace />} /><Route path="/home" element={<Landing />} /><Route path="/login" element={<AuthPage mode="login" />} /><Route path="/register" element={<AuthPage mode="register" />} /><Route path="/forgot-password" element={<ForgotPasswordPage />} /><Route path="/reset-password" element={<ResetPasswordPage />} />
     <Route path="/jobs" element={<><PublicNav /><main className="public-jobs section-wrap"><JobsPage /></main></>} /><Route path="/jobs/:jobId" element={<><PublicNav /><main className="public-jobs section-wrap"><JobDetailPage /></main></>} />
     <Route path="/dashboard" element={<Protected><RoleHome /></Protected>} />
-    <Route path="/candidate" element={<Protected roles={["candidate"]}><CandidateDashboardLayout /></Protected>}><Route index element={<DashboardHome />} /><Route path="profile" element={<ProfilePage />} /><Route path="notifications" element={<NotificationsPage />} /><Route path="resume" element={<ResumePage />} /><Route path="jobs" element={<JobsPage />} /><Route path="saved" element={<SavedJobsPage />} /><Route path="applications" element={<ApplicationsPage />} /><Route path="applications/:applicationId" element={<CandidateApplicationDetailPage />} /><Route path="assessments" element={<AssessmentListPage audience="candidate" />} /><Route path="assessments/:assessmentId" element={<AssessmentDetailPage audience="candidate" />} /><Route path="interviews" element={<InterviewManagementPage />} /><Route path="analysis" element={<AnalysisPage />} /><Route path="settings" element={<SettingsPage />} /></Route>
+    <Route path="/candidate" element={<Protected roles={["candidate"]}><CandidateDashboardLayout /></Protected>}><Route index element={<DashboardHome />} /><Route path="profile" element={<ProfilePage />} /><Route path="notifications" element={<NotificationsPage />} /><Route path="resume" element={<ResumePage />} /><Route path="jobs" element={<JobsPage />} /><Route path="saved" element={<SavedJobsPage />} /><Route path="applications" element={<ApplicationsPage />} /><Route path="applications/:applicationId" element={<CandidateApplicationDetailPage />} /><Route path="assessments" element={<AssessmentListPage audience="candidate" />} /><Route path="assessments/:assessmentId" element={<AssessmentDetailPage audience="candidate" />} /><Route path="analysis" element={<AnalysisPage />} /><Route path="settings" element={<SettingsPage />} /></Route>
     <Route path="/candidate/interviews/:interviewId/room" element={<Protected roles={["candidate"]}><Suspense fallback={<div className="page-loading">Loading interview room…</div>}><InterviewRoom audience="candidate" /></Suspense></Protected>} />
-    <Route path="/recruiter" element={<Protected roles={["recruiter"]}><DashboardLayout /></Protected>}><Route index element={<DashboardHome />} /><Route path="company" element={<CompanyPage />} /><Route path="notifications" element={<NotificationsPage />} /><Route path="jobs" element={<RecruiterJobsPage />} /><Route path="applicants" element={<ApplicantsPage />} /><Route path="applicants/:applicationId" element={<ApplicantDetailPage />} /><Route path="assessments" element={<RecruiterAssessments />} /><Route path="question-bank" element={<RecruiterAssessments questionBankOnly />} /><Route path="coding-question-bank" element={<InterviewManagementPage codingBankOnly />} /><Route path="assessments/:assessmentId" element={<AssessmentDetailPage audience="recruiter" />} /><Route path="interviews" element={<InterviewManagementPage />} /><Route path="settings" element={<SettingsPage />} /></Route>
+    <Route path="/recruiter" element={<Protected roles={["recruiter"]}><DashboardLayout /></Protected>}><Route index element={<DashboardHome />} /><Route path="company" element={<CompanyPage />} /><Route path="notifications" element={<NotificationsPage />} /><Route path="jobs" element={<RecruiterJobsPage />} /><Route path="applicants" element={<ApplicantsPage />} /><Route path="applicants/:applicationId" element={<ApplicantDetailPage />} /><Route path="assessments" element={<RecruiterAssessments />} /><Route path="question-bank" element={<RecruiterAssessments questionBankOnly />} /><Route path="assessments/:assessmentId" element={<AssessmentDetailPage audience="recruiter" />} /><Route path="interviews" element={<InterviewManagementPage />} /><Route path="interviews/:interviewId/report" element={<InterviewReportPage />} /><Route path="settings" element={<SettingsPage />} /></Route>
     <Route path="/recruiter/interviews/:interviewId/room" element={<Protected roles={["recruiter"]}><Suspense fallback={<div className="page-loading">Loading interview room…</div>}><InterviewRoom audience="recruiter" /></Suspense></Protected>} />
     <Route path="/admin" element={<Protected roles={["admin"]}><DashboardLayout /></Protected>}><Route index element={<AdminPage />} /><Route path="notifications" element={<NotificationsPage />} /><Route path="users" element={<AdminPage mode="users" />} /><Route path="jobs" element={<AdminPage mode="jobs" />} /><Route path="companies" element={<AdminPage mode="companies" />} /><Route path="proctoring" element={<AdminProctoring />} /><Route path="settings" element={<SettingsPage />} /></Route>
     <Route path="*" element={<Navigate to="/home" replace />} />

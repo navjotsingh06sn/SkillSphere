@@ -47,7 +47,8 @@ export default function InterviewRoom({ audience }) {
   const [consented, setConsented] = useState(false);
   const [activeProblem, setActiveProblem] = useState(null);
   const [problemForm, setProblemForm] = useState({ question: "", allowed_languages: ["python", "javascript"], time_limit_seconds: 1800 });
-  const [bankQuestions, setBankQuestions] = useState([]);
+  const [waitingAdmission, setWaitingAdmission] = useState(false);
+  const [waitingCandidates, setWaitingCandidates] = useState([]);
   const [language, setLanguage] = useState("python");
   const [sourceCode, setSourceCode] = useState("");
   const [stdin, setStdin] = useState("");
@@ -61,18 +62,16 @@ export default function InterviewRoom({ audience }) {
 
   const load = useCallback(async () => {
     try {
-      const [data, activity, attempts, bank] = await Promise.all([
+      const [data, activity, attempts] = await Promise.all([
         api(`/interviews/${interviewId}/room`),
-        api(`/interviews/${interviewId}/room/activity`),
-        api(`/interviews/${interviewId}/room/submissions`),
-        recruiter ? api("/interviews/coding-question-bank") : Promise.resolve([]),
+        recruiter ? api(`/interviews/${interviewId}/room/activity`) : Promise.resolve([]),
+        recruiter ? api(`/interviews/${interviewId}/room/submissions`) : Promise.resolve([]),
       ]);
       setRoom(data);
       const currentProblem = data.problems.find(item => item.id === data.active_coding_problem?.problem_id);
       setActiveProblem(currentProblem ? { ...currentProblem, ...data.active_coding_problem } : null);
       setEvents(activity.reverse());
-      setSubmissions(attempts);
-      setBankQuestions(bank);
+      setSubmissions((attempts || []).map(item => ({ ...item, result: item.result || {} })));
       setLiveCode(attempts.find(item => item.is_final)?.source_code || "");
       if (!recruiter) setConsented(Boolean(data.candidate_room_consent?.accepted || sessionStorage.getItem(candidateConsentKey)));
       setError("");
@@ -125,7 +124,7 @@ export default function InterviewRoom({ audience }) {
     pendingIce.current = [];
     stopMediaStream(shareStream.current); shareStream.current = null;
     stopMediaStream(localStream.current); localStream.current = null;
-    setConnected(false); setSharing(false); setParticipants([]);
+    setConnected(false); setSharing(false); setParticipants([]); setWaitingAdmission(false); setWaitingCandidates([]);
     setMuted(false); setCameraOff(false);
     if (localVideo.current) localVideo.current.srcObject = null;
     if (remoteVideo.current) remoteVideo.current.srcObject = null;
@@ -187,8 +186,8 @@ export default function InterviewRoom({ audience }) {
         if (!peer.current?.remoteDescription) return;
         for (const candidate of pendingIce.current.splice(0)) { try { await peer.current.addIceCandidate(candidate); } catch {} }
       };
-      ws.onopen = () => { if (!sessionIsCurrent()) { ws.close(); return; } setConnected(true); ws.send(JSON.stringify({ type: "candidate_joined" })); setNotice("Connected to the in-platform room."); };
-      ws.onclose = event => { if (!sessionIsCurrent()) return; setConnected(false); if (![1000, 4409].includes(event.code)) setError("Room connection closed. Reconnect to continue."); };
+      ws.onopen = () => { if (!sessionIsCurrent()) { ws.close(); return; } if (recruiter) { setConnected(true); setNotice("Connected to the in-platform room."); } };
+      ws.onclose = event => { if (!sessionIsCurrent()) return; setConnected(false); setWaitingAdmission(false); if (![1000, 4409].includes(event.code)) setError("Room connection closed. Reconnect to continue."); };
       ws.onerror = () => { if (sessionIsCurrent()) setError("Could not connect to the live interview room."); };
       ws.onmessage = async event => {
         if (!sessionIsCurrent()) return;
@@ -196,10 +195,16 @@ export default function InterviewRoom({ audience }) {
         try { message = JSON.parse(event.data); } catch { return; }
         if (message.type === "room_state") {
           setParticipants(message.participants || []);
+          setWaitingCandidates(message.waiting_candidates || []);
           if (message.participants?.some(item => item.role === "candidate")) await createRecruiterOffer();
         }
+        if (message.type === "admission_pending") { setWaitingAdmission(true); setConnected(false); setNotice("You’re in the lobby. The recruiter will admit you shortly."); }
+        if (message.type === "candidate_waiting") setWaitingCandidates(current => [...current.filter(item => item.id !== message.participant.id), message.participant]);
+        if (message.type === "candidate_left_lobby") setWaitingCandidates(current => current.filter(item => item.id !== message.participant.id));
+        if (message.type === "participant_admitted") { setWaitingAdmission(false); setConnected(true); ws.send(JSON.stringify({ type: "candidate_joined" })); setNotice("The recruiter admitted you to the interview."); }
         if (message.type === "participant_joined") {
           setParticipants(current => [...current.filter(item => item.id !== message.participant.id), message.participant]);
+          setWaitingCandidates(current => current.filter(item => item.id !== message.participant.id));
           await createRecruiterOffer();
         }
         if (message.type === "participant_left") setParticipants(current => current.filter(item => item.id !== message.participant.id));
@@ -221,6 +226,7 @@ export default function InterviewRoom({ audience }) {
         if (message.type === "room_started") { await load(); setNotice("The interview room is live."); }
         if (message.type === "room_ended") { await load(); setNotice("The recruiter ended the room."); closeMedia(); }
         if (message.type === "coding_result") { setSubmissions(current => [message.submission, ...current].slice(0, 100)); }
+        if (message.type === "error") setError(message.message || "The room could not process that action.");
       };
     } catch (err) {
       if (acquiredStream && !sessionIsCurrent()) stopMediaStream(acquiredStream);
@@ -263,7 +269,12 @@ export default function InterviewRoom({ audience }) {
 
   async function leaveRoom() {
     closeMedia();
-    navigate(recruiter ? "/recruiter/interviews" : "/candidate/interviews");
+    navigate(recruiter ? "/recruiter/interviews" : "/candidate");
+  }
+
+  function admitCandidate() {
+    if (!connected || !waitingCandidates.length) return;
+    socket.current?.send(JSON.stringify({ type: "admit_candidate" }));
   }
 
   async function endRoom() {
@@ -280,19 +291,7 @@ export default function InterviewRoom({ audience }) {
       setSourceCode("");
       setRunResult(null);
       setProblemForm(current => ({ ...current, question: "" }));
-      setNotice("Question sent to the candidate and saved in your question bank.");
-      await load();
-    } catch (err) { setError(err.message); }
-  }
-
-  async function sendBankQuestion(question) {
-    setError("");
-    try {
-      const data = await api(`/interviews/${interviewId}/room/questions/${question.id}/send`, { method: "POST" });
-      setActiveProblem(data);
-      setSourceCode("");
-      setRunResult(null);
-      setNotice("Saved question sent to the candidate; its live timer has started.");
+      setNotice("Question sent to the candidate.");
       await load();
     } catch (err) { setError(err.message); }
   }
@@ -326,30 +325,28 @@ export default function InterviewRoom({ audience }) {
   const editorLanguage = { python: "python", javascript: "javascript", cpp: "cpp", java: "java", go: "go", c: "c", csharp: "csharp", php: "php", ruby: "ruby", rust: "rust", typescript: "typescript", bash: "shell" }[language] || "plaintext";
 
   return <div className="interview-room-page">
-    <header className="interview-room-topbar"><Link to={recruiter ? "/recruiter/interviews" : "/candidate/interviews"}><ArrowLeft size={16} /> Interviews</Link><div><span className={"room-live-dot " + (room?.status === "in_progress" && !room?.room_ended_at ? "room-live" : "")}></span><b>{room?.job_title || "Interview room"}</b><small>{room?.status?.replaceAll("_", " ")}</small></div><span className="room-clock">{formatClock(elapsed)}</span></header>
+    <header className="interview-room-topbar"><Link to={recruiter ? "/recruiter/interviews" : "/candidate"}><ArrowLeft size={16} /> {recruiter ? "Interviews" : "Dashboard"}</Link><div><span className={"room-live-dot " + (room?.status === "in_progress" && !room?.room_ended_at ? "room-live" : "")}></span><b>{room?.job_title || "Interview room"}</b><small>{room?.status?.replaceAll("_", " ")}</small></div><span className="room-clock">{formatClock(elapsed)}</span></header>
     <div className="interview-room-main"><div className="interview-room-columns">
       <section className="panel room-media-panel"><div className="room-video-grid"><div className="room-video-tile"><video ref={remoteVideo} autoPlay playsInline /><span>{participants.find(item => item.role !== room?.role)?.name || (connected ? "Waiting for participant" : "Remote participant")}</span></div><div className="room-video-tile room-local-video"><video ref={localVideo} autoPlay muted playsInline /><span>You · {sharing ? "sharing screen" : "camera"}</span></div></div>
         <div className="room-controls"><button disabled={!connected} onClick={() => toggleTrack("audio")} title={muted ? "Turn microphone on" : "Mute microphone"}>{muted ? <MicOff /> : <Mic />}</button><button disabled={!connected} onClick={() => toggleTrack("video")} title={cameraOff ? "Turn camera on" : "Turn camera off"}>{cameraOff ? <VideoOff /> : <Video />}</button><button disabled={!connected} onClick={toggleShare} title={sharing ? "Stop sharing" : "Share screen"}>{sharing ? <MonitorUp /> : <Expand />}</button><button disabled={!connected} onClick={() => document.querySelector(".interview-room-page")?.requestFullscreen?.()} title="Full screen"><Expand /></button><button className="room-leave-control" onClick={leaveRoom} title="Leave room"><DoorOpen /> Leave</button>{recruiter && ["scheduled", "in_progress"].includes(room?.status) && <button className="room-end-control" onClick={endRoom} title="End interview"><PhoneOff /> End</button>}</div>
-        {!connected && room?.status !== "completed" && room?.status !== "cancelled" && <div className="room-join-box">{room?.role === "candidate" && !consented && <label className="room-consent"><input type="checkbox" checked={consent} onChange={event => setConsent(event.target.checked)} /><span>Before joining, I understand SkillSphere records browser-observable signals: tab/window focus changes, fullscreen exits, and copy/paste attempts in the coding editor. These are timestamped and shown to both participants as review signals, not proof of misconduct. They do not monitor other apps or websites. Camera and microphone are used for the live call only and are not recorded. Screen sharing starts only if I choose it.</span></label>}{room?.role === "recruiter" && room?.status === "scheduled" && <p>Starting the room makes it available to the candidate.</p>}<button className="button button-primary" onClick={startRoom} disabled={!recruiter && !consented}>{recruiter && room?.status === "scheduled" ? "Start interview room" : "Join interview room"}</button>{error && <p className="room-error">{error}</p>}</div>}
+        {!connected && !waitingAdmission && room?.status !== "completed" && room?.status !== "cancelled" && <div className="room-join-box">{room?.role === "candidate" && !consented && <label className="room-consent"><input type="checkbox" checked={consent} onChange={event => setConsent(event.target.checked)} /><span>Before joining, I understand SkillSphere records browser-observable signals: tab/window focus changes, fullscreen exits, and copy/paste attempts in the coding editor. These are timestamped and shown to the recruiter as review signals, not proof of misconduct. They do not monitor other apps or websites. Camera and microphone are used for the live call only and are not recorded. Screen sharing starts only if I choose it.</span></label>}{room?.role === "recruiter" && room?.status === "scheduled" && <p>Starting the room makes it available to the candidate.</p>}<button className="button button-primary" onClick={startRoom} disabled={!recruiter && !consented}>{recruiter && room?.status === "scheduled" ? "Start interview room" : "Join interview room"}</button>{error && <p className="room-error">{error}</p>}</div>}
+        {waitingAdmission && !connected && <div className="room-join-box"><b>Waiting for recruiter approval</b><p>Your request to join has been sent. Keep this page open.</p><button className="button button-outline" onClick={leaveRoom}>Leave waiting room</button></div>}
       </section>
-      <section className="panel room-participants-panel"><span className="eyebrow">PARTICIPANTS</span><h3>{participants.length || 0} connected</h3>{participants.map(item => <div className="room-participant" key={item.id}><span className="room-avatar">{(item.name || "?").slice(0,1).toUpperCase()}</span><span><b>{item.name}</b><small>{item.role === "candidate" ? "Candidate" : "Recruiter"}{item.id === room?.[item.role]?.id ? " · You" : ""}</small></span><span className="room-live-dot room-live" /></div>)}{connected && <small className="room-monitor-note">Camera and microphone are live. Nothing is recorded.</small>}</section>
+      <section className="panel room-participants-panel"><span className="eyebrow">PARTICIPANTS</span><h3>{participants.length || 0} connected</h3>{participants.map(item => <div className="room-participant" key={item.id}><span className="room-avatar">{(item.name || "?").slice(0,1).toUpperCase()}</span><span><b>{item.name}</b><small>{item.role === "candidate" ? "Candidate" : "Recruiter"}{item.id === room?.[item.role]?.id ? " · You" : ""}</small></span><span className="room-live-dot room-live" /></div>)}{recruiter && waitingCandidates.map(item => <div className="room-participant room-awaiting-admission" key={item.id}><span className="room-avatar">{(item.name || "?").slice(0,1).toUpperCase()}</span><span><b>{item.name}</b><small>Waiting to join</small></span><button className="button button-primary" onClick={admitCandidate} disabled={!connected || room?.status !== "in_progress"}>Admit</button></div>)}{connected && <small className="room-monitor-note">Camera and microphone are live. Nothing is recorded.</small>}</section>
     </div>
     {room?.role === "candidate" && <section className="panel room-coding-panel"><div className="room-section-heading"><div><span className="eyebrow"><Code2 size={14} /> LIVE CODING</span><h2>{activeProblem ? "Question for you" : "Waiting for a coding question"}</h2></div>{activeProblem && <span className="room-code-timer">{formatClock(secondsRemaining)}</span>}</div>
       {activeProblem ? <><p className="room-problem-prompt">{activeProblem.question || activeProblem.prompt}</p><div className="room-code-toolbar"><label>Language<select value={language} onChange={event => setLanguage(event.target.value)}>{activeLanguages.map(item => <option key={item} value={item}>{room.language_labels?.[item] || item}</option>)}</select></label><small>{Math.floor(activeProblem.time_limit_seconds / 60)} min</small></div><div className="room-editor"><Editor height="360px" language={editorLanguage} value={sourceCode} onChange={value => broadcastCode(value || "")} theme="vs-dark" options={{ minimap: { enabled: false }, fontSize: 14, automaticLayout: true, readOnly: !connected, scrollBeyondLastLine: false }} onMount={(editor) => { const node = editor.getDomNode(); node?.addEventListener("copy", event => { event.preventDefault(); void logActivity("copy_attempt"); }); node?.addEventListener("paste", event => { event.preventDefault(); void logActivity("paste_attempt"); }); }} /></div><label className="room-stdin-field">Program input (optional)<textarea rows="3" maxLength="4000" value={stdin} onChange={event => setStdin(event.target.value)} placeholder="Enter input for your program, if needed" /></label><div className="room-code-actions"><button className="button button-outline" onClick={() => runCode(false)} disabled={running || !connected}><Play size={15} />{running ? "Running in sandbox…" : "Run code"}</button><button className="button button-primary" onClick={() => runCode(true)} disabled={running || !connected}><Send size={15} />Submit code</button></div>{runResult && <div className="room-run-result"><b>{runResult.status}{runResult.time ? ` · ${runResult.time}s` : ""}{runResult.memory ? ` · ${runResult.memory} KB` : ""}</b>{runResult.stdout && <pre>Output: {runResult.stdout}</pre>}{runResult.stderr && <pre>{runResult.stderr}</pre>}</div>}</> : <p>The recruiter will send your coding question in this room.</p>}
     </section>}
     {room?.role === "recruiter" && <section className="room-recruiter-tools"><section className="panel room-coding-panel"><span className="eyebrow"><Code2 size={14} /> LIVE CODING</span><h2>Send a question to the candidate</h2>
       {room.problems?.length > 0 && <><h3>Questions used in this interview</h3>{room.problems.map(problem => <div className="room-problem-choice" key={problem.id}><span className="room-question-preview">{problem.question || problem.prompt}</span><small>{Math.floor(problem.time_limit_seconds/60)} min</small><button className="button button-outline" disabled={!connected || room.status !== "in_progress"} onClick={() => activateProblem(problem)}>Send again</button></div>)}</>}
-      {bankQuestions.length > 0 && <><h3>Your saved questions</h3>{bankQuestions.map(question => <div className="room-problem-choice" key={question.id}><span className="room-question-preview">{question.question}</span><small>{Math.floor(question.time_limit_seconds/60)} min</small><button className="button button-outline" disabled={!connected || room.status !== "in_progress"} onClick={() => sendBankQuestion(question)}>Send to candidate</button></div>)}</>}
       <form className="edit-form room-problem-form" onSubmit={createProblem}><label>Question<textarea required minLength="10" maxLength="12000" rows="6" placeholder="Write the question exactly as the candidate should see it" value={problemForm.question} onChange={event => setProblemForm({ ...problemForm, question: event.target.value })} /></label>
         <div className="coding-language-checklist"><b>Allowed languages</b><div>{Object.keys(room.language_ids || {}).map(item => <label key={item}><input type="checkbox" checked={problemForm.allowed_languages.includes(item)} onChange={event => setProblemForm(current => ({ ...current, allowed_languages: event.target.checked ? [...current.allowed_languages, item] : current.allowed_languages.filter(language => language !== item) }))} />{room.language_labels?.[item] || item}</label>)}</div></div>
         <label>Time limit (seconds)<input type="number" min="60" max="7200" value={problemForm.time_limit_seconds} onChange={event => setProblemForm({ ...problemForm, time_limit_seconds: event.target.value })} /></label>
-        <button className="button button-primary" disabled={!connected || room.status !== "in_progress" || !problemForm.allowed_languages.length}>Save to question bank &amp; send to candidate</button>
+        <button className="button button-primary" disabled={!connected || room.status !== "in_progress" || !problemForm.allowed_languages.length}>Send question to candidate</button>
       </form>
       {activeProblem && <><h3>Candidate live code</h3><div className="room-editor"><Editor height="300px" language={editorLanguage} value={liveCode} theme="vs-dark" options={{ readOnly: true, minimap: { enabled: false }, fontSize: 13, automaticLayout: true }} /></div></>}
     </section></section>}
     {room?.role === "recruiter" && <section className="panel room-events-panel"><div className="room-section-heading"><div><span className="eyebrow"><ShieldAlert size={14} /> REVIEW SIGNALS</span><h2>Browser activity</h2></div><span>{events.length} logged</span></div><p>Signals are browser-observable events, not proof of misconduct. The room does not monitor other apps or websites.</p>{events.length ? <ol className="room-event-list">{events.map(event => <li key={event.id}><time>{new Date(event.occurred_at).toLocaleTimeString()}</time><b>{event.event_type.replaceAll("_", " ")}</b></li>)}</ol> : <small>No activity signals recorded.</small>}</section>}
-    {room?.role === "candidate" && room.status === "completed" && <section className="panel room-events-panel"><span className="eyebrow">YOUR INTERVIEW SUMMARY</span><h2>Interview completed</h2>{events.length ? <><p>{events.length} browser activity signal(s) were recorded. These are review signals, not proof of misconduct.</p><ol className="room-event-list">{events.map(event => <li key={event.id}><time>{new Date(event.occurred_at).toLocaleString()}</time><b>{event.event_type.replaceAll("_", " ")}</b></li>)}</ol></> : <p>No browser activity signals were recorded.</p>}{room.feedback && <div className="room-candidate-feedback"><h3>Recruiter feedback</h3><p>Rating: {room.feedback.rating}/5 · {room.feedback.recommendation.replaceAll("_", " ")}</p>{room.feedback.strengths && <p><b>Strengths:</b> {room.feedback.strengths}</p>}{room.feedback.improvement_areas && <p><b>Areas to improve:</b> {room.feedback.improvement_areas}</p>}</div>}</section>}
-    {room?.role === "recruiter" && submissions.length > 0 && <section className="panel room-events-panel"><span className="eyebrow">CODE SUBMISSIONS</span><h2>Candidate results</h2>{submissions.map(item => <details className="room-submission-detail" key={item.id}><summary><b>{item.language} {item.is_final ? "· Final submission" : "· Run"}</b><span>{item.result.status || "Previous saved result"}</span><time>{new Date(item.created_at).toLocaleString()}</time></summary><p><b>Question:</b> {item.question}</p>{item.result.stdout && <pre>Output: {item.result.stdout}</pre>}{item.result.stderr && <pre>{item.result.stderr}</pre>}<details><summary>View submitted code</summary><pre className="room-submitted-code">{item.source_code}</pre></details></details>)}</section>}
-    {room?.role === "candidate" && submissions.length > 0 && <section className="panel room-events-panel"><span className="eyebrow">YOUR CODING RESULTS</span><h2>Submissions</h2>{submissions.map(item => <div className="room-submission-row" key={item.id}><b>{item.language} {item.is_final ? "· Final" : "· Run"}</b><span>{item.result.status || "Previous saved result"}</span><time>{new Date(item.created_at).toLocaleString()}</time></div>)}</section>}
+    {room?.role === "recruiter" && room.status === "completed" && <section className="panel room-events-panel"><span className="eyebrow">INTERVIEW REPORT</span><h2>Interview ended</h2><p>View the candidate’s code results, activity summary, and feedback on the report page.</p><Link className="button button-primary" to={`/recruiter/interviews/${interviewId}/report`}>Open interview report</Link></section>}
     </div>{(error || notice) && <div className={error ? "room-error room-toast" : "room-toast"}>{error || notice}</div>}</div>;
 }

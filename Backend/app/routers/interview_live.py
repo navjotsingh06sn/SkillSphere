@@ -82,25 +82,71 @@ class FeedbackInput(BaseModel):
 class RoomHub:
     def __init__(self):
         self.rooms: dict[str, dict[WebSocket, dict]] = {}
+        self.waiting: dict[str, dict[WebSocket, dict]] = {}
         self.lock = asyncio.Lock()
 
-    async def connect(self, interview_id: str, websocket: WebSocket, participant: dict):
+    async def connect(self, interview_id: str, websocket: WebSocket, participant: dict, waiting: bool = False):
         await websocket.accept(subprotocol="skillsphere-room")
         async with self.lock:
             room = self.rooms.setdefault(interview_id, {})
+            waiting_room = self.waiting.setdefault(interview_id, {})
+            if any(item.get("id") == participant.get("id") for item in [*room.values(), *waiting_room.values()]):
+                await websocket.close(code=4409)
+                return False
             peers = list(room.values())
-            room[websocket] = participant
-        await websocket.send_json({"type": "room_state", "participants": [*peers, participant]})
-        await self.broadcast(interview_id, {"type": "participant_joined", "participant": participant}, exclude=websocket)
+            if waiting:
+                waiting_room[websocket] = participant
+                waiting_candidates = list(waiting_room.values())
+            else:
+                room[websocket] = participant
+                waiting_candidates = list(waiting_room.values())
+        if waiting:
+            await websocket.send_json({"type": "admission_pending"})
+            await self.broadcast(interview_id, {"type": "candidate_waiting", "participant": participant}, exclude=websocket)
+        else:
+            await websocket.send_json({"type": "room_state", "participants": [*peers, participant], "waiting_candidates": waiting_candidates})
+            await self.broadcast(interview_id, {"type": "participant_joined", "participant": participant}, exclude=websocket)
+        return True
+
+    async def admit_candidate(self, interview_id: str, candidate_id: str) -> bool:
+        async with self.lock:
+            waiting_room = self.waiting.get(interview_id, {})
+            candidate_socket = next((ws for ws, item in waiting_room.items() if item.get("id") == candidate_id), None)
+            if candidate_socket is None:
+                return False
+            participant = waiting_room.pop(candidate_socket)
+            if not waiting_room:
+                self.waiting.pop(interview_id, None)
+            room = self.rooms.setdefault(interview_id, {})
+            peers = list(room.values())
+            room[candidate_socket] = participant
+        await candidate_socket.send_json({"type": "participant_admitted"})
+        await candidate_socket.send_json({"type": "room_state", "participants": [*peers, participant], "waiting_candidates": []})
+        await self.broadcast(interview_id, {"type": "participant_joined", "participant": participant}, exclude=candidate_socket)
+        return True
+
+    async def is_admitted(self, interview_id: str, websocket: WebSocket) -> bool:
+        async with self.lock:
+            return websocket in self.rooms.get(interview_id, {})
+
+    async def has_participant(self, interview_id: str, participant_id: str) -> bool:
+        async with self.lock:
+            return any(item.get("id") == participant_id for item in self.rooms.get(interview_id, {}).values())
 
     async def disconnect(self, interview_id: str, websocket: WebSocket):
         async with self.lock:
             room = self.rooms.get(interview_id, {})
             participant = room.pop(websocket, None)
+            waiting_room = self.waiting.get(interview_id, {})
+            waiting_participant = waiting_room.pop(websocket, None)
             if not room:
                 self.rooms.pop(interview_id, None)
+            if not waiting_room:
+                self.waiting.pop(interview_id, None)
         if participant:
             await self.broadcast(interview_id, {"type": "participant_left", "participant": participant})
+        elif waiting_participant:
+            await self.broadcast(interview_id, {"type": "candidate_left_lobby", "participant": waiting_participant})
 
     async def broadcast(self, interview_id: str, payload: dict, exclude: WebSocket | None = None):
         room = self.rooms.get(interview_id, {})
@@ -108,6 +154,18 @@ class RoomHub:
         for websocket in list(room):
             if websocket is exclude:
                 continue
+            try:
+                await websocket.send_json(payload)
+            except Exception:
+                dead.append(websocket)
+        for websocket in dead:
+            await self.disconnect(interview_id, websocket)
+
+    async def broadcast_waiting(self, interview_id: str, payload: dict):
+        async with self.lock:
+            waiting = list(self.waiting.get(interview_id, {}))
+        dead = []
+        for websocket in waiting:
             try:
                 await websocket.send_json(payload)
             except Exception:
@@ -150,15 +208,6 @@ def _problem_title(question: str) -> str:
     return first_line[:200]
 
 
-def _question_payload(problem: InterviewCodingProblem) -> dict:
-    return {
-        "id": str(problem.id), "question": problem.prompt, "title": problem.title,
-        "allowed_languages": problem.allowed_languages,
-        "time_limit_seconds": problem.time_limit_seconds,
-        "created_at": problem.created_at.isoformat() if problem.created_at else None,
-    }
-
-
 @router.get("/{interview_id}/room")
 async def get_room(interview_id: str, user: dict = Depends(get_current_user), db: AsyncSession = Depends(get_database)):
     interview, role = await _get_owned(db, interview_id, user)
@@ -168,10 +217,8 @@ async def get_room(interview_id: str, user: dict = Depends(get_current_user), db
     job = await db.get(Job, interview.job_id)
     extra = dict(interview.extra_data or {})
     problems = (await db.scalars(select(InterviewCodingProblem).where(InterviewCodingProblem.interview_id == interview.id).order_by(InterviewCodingProblem.created_at.desc()))).all()
-    feedback = await db.scalar(select(InterviewFeedback).where(InterviewFeedback.interview_id == interview.id))
+    feedback = await db.scalar(select(InterviewFeedback).where(InterviewFeedback.interview_id == interview.id)) if role == "recruiter" else None
     feedback_payload = serialize_model(feedback) if feedback else None
-    if role == "candidate" and feedback_payload:
-        feedback_payload.pop("private_notes", None)
     return {
         "id": str(interview.id), "status": interview.status, "scheduled_at": interview.scheduled_at.isoformat() if interview.scheduled_at else None,
         "room_started_at": interview.room_started_at.isoformat() if interview.room_started_at else None,
@@ -264,100 +311,13 @@ async def end_room(interview_id: str, user: dict = Depends(recruiter_required), 
     db.add(Notification(user_id=interview.candidate_id, type="interview_room_ended", message="The in-platform interview room has ended.", related_id=interview.id, job_id=interview.job_id, is_read=False, created_at=now))
     await db.commit()
     await hub.broadcast(str(interview.id), {"type": "room_ended", "at": now.isoformat()})
+    await hub.broadcast_waiting(str(interview.id), {"type": "room_ended", "at": now.isoformat()})
     return {"status": interview.status, "room_ended_at": now.isoformat()}
 
 
 @router.get("/coding-languages")
 async def coding_languages(user: dict = Depends(recruiter_required)):
     return {"language_ids": _language_ids(), "language_labels": LANGUAGE_NAMES}
-
-
-@router.get("/coding-question-bank")
-async def list_coding_question_bank(user: dict = Depends(recruiter_required), db: AsyncSession = Depends(get_database)):
-    recruiter_id = parse_uuid(user["id"], "recruiter id")
-    questions = (await db.scalars(
-        select(InterviewCodingProblem)
-        .where(
-            InterviewCodingProblem.created_by == recruiter_id,
-            InterviewCodingProblem.interview_id.is_(None),
-        )
-        .order_by(InterviewCodingProblem.created_at.desc())
-        .limit(500)
-    )).all()
-    return [_question_payload(question) for question in questions]
-
-
-@router.post("/coding-question-bank", status_code=201)
-async def create_coding_bank_question(data: ProblemInput, user: dict = Depends(recruiter_required), db: AsyncSession = Depends(get_database)):
-    languages = _language_ids()
-    if any(language not in languages for language in data.allowed_languages):
-        raise HTTPException(status_code=422, detail="Choose languages enabled by the configured code sandbox.")
-    problem = InterviewCodingProblem(
-        interview_id=None,
-        created_by=parse_uuid(user["id"], "recruiter id"),
-        title=_problem_title(data.question),
-        prompt=data.question.strip(),
-        allowed_languages=data.allowed_languages,
-        time_limit_seconds=data.time_limit_seconds,
-    )
-    db.add(problem)
-    await db.commit()
-    await db.refresh(problem)
-    return _question_payload(problem)
-
-
-@router.post("/{interview_id}/room/questions/{question_id}/send")
-async def send_coding_bank_question(interview_id: str, question_id: str, user: dict = Depends(recruiter_required), db: AsyncSession = Depends(get_database)):
-    interview, _ = await _get_owned(db, interview_id, user)
-    if interview.status != "in_progress" or interview.room_ended_at:
-        raise HTTPException(status_code=409, detail="Start the live interview before sending a coding question.")
-
-    application = await db.get(Application, interview.application_id)
-    if not application or application.status not in {"shortlisted", "selected", "interview"}:
-        raise HTTPException(status_code=409, detail="Coding questions can only be sent to shortlisted or selected candidates.")
-
-    bank_question = await db.scalar(
-        select(InterviewCodingProblem).where(
-            InterviewCodingProblem.id == parse_uuid(question_id, "question id"),
-            InterviewCodingProblem.created_by == parse_uuid(user["id"], "recruiter id"),
-            InterviewCodingProblem.interview_id.is_(None),
-        )
-    )
-    if not bank_question:
-        raise HTTPException(status_code=404, detail="Coding question was not found in your question bank.")
-
-    languages = _language_ids()
-    allowed_languages = [item for item in bank_question.allowed_languages if item in languages]
-    if not allowed_languages:
-        raise HTTPException(status_code=409, detail="This question has no languages enabled by the current code sandbox.")
-
-    problem = InterviewCodingProblem(
-        interview_id=interview.id,
-        created_by=bank_question.created_by,
-        title=bank_question.title,
-        prompt=bank_question.prompt,
-        allowed_languages=allowed_languages,
-        time_limit_seconds=bank_question.time_limit_seconds,
-    )
-    db.add(problem)
-    await db.flush()
-    now = datetime.now(timezone.utc)
-    extra = dict(interview.extra_data or {})
-    active_problem = {
-        "problem_id": str(problem.id), "started_at": now.isoformat(),
-        "ends_at": (now + timedelta(seconds=problem.time_limit_seconds)).isoformat(),
-    }
-    extra["active_coding_problem"] = active_problem
-    interview.extra_data = extra
-    await db.commit()
-    await db.refresh(problem)
-
-    payload = {
-        **_question_payload(problem), "prompt": problem.prompt,
-        **active_problem,
-    }
-    await hub.broadcast(str(interview.id), {"type": "problem_activated", "problem": payload})
-    return payload
 
 
 @router.post("/{interview_id}/room/problems")
@@ -371,17 +331,9 @@ async def create_problem(interview_id: str, data: ProblemInput, user: dict = Dep
     recruiter_id = parse_uuid(user["id"], "recruiter id")
     question_text = data.question.strip()
 
-    bank_question = InterviewCodingProblem(
-        interview_id=None, created_by=recruiter_id,
-        title=_problem_title(question_text), prompt=question_text,
-        allowed_languages=data.allowed_languages,
-        time_limit_seconds=data.time_limit_seconds,
-    )
-    db.add(bank_question)
-    await db.flush()
     problem = InterviewCodingProblem(
         interview_id=interview.id, created_by=recruiter_id,
-        title=bank_question.title, prompt=question_text,
+        title=_problem_title(question_text), prompt=question_text,
         allowed_languages=data.allowed_languages,
         time_limit_seconds=data.time_limit_seconds,
     )
@@ -396,13 +348,11 @@ async def create_problem(interview_id: str, data: ProblemInput, user: dict = Dep
     extra["active_coding_problem"] = active_problem
     interview.extra_data = extra
     await db.commit()
-    await db.refresh(bank_question)
     await db.refresh(problem)
 
-    payload = {**_question_payload(problem), "prompt": problem.prompt, **active_problem}
+    payload = {"id": str(problem.id), "title": problem.title, "question": problem.prompt, "prompt": problem.prompt, "allowed_languages": problem.allowed_languages, "time_limit_seconds": problem.time_limit_seconds, **active_problem}
     await hub.broadcast(str(interview.id), {"type": "problem_activated", "problem": payload})
-    await hub.broadcast(str(interview.id), {"type": "question_saved", "question": _question_payload(bank_question)})
-    return {**payload, "saved_to_question_bank": True}
+    return payload
 
 
 @router.post("/{interview_id}/room/problems/{problem_id}/activate")
@@ -429,6 +379,8 @@ async def run_code(interview_id: str, problem_id: str, data: RunInput, user: dic
     interview, role = await _get_owned(db, interview_id, user)
     if role != "candidate":
         raise HTTPException(status_code=403, detail="Only the candidate can run interview code.")
+    if not await hub.has_participant(str(interview.id), str(user["id"])):
+        raise HTTPException(status_code=403, detail="Wait for the recruiter to admit you before using live coding.")
     if interview.status != "in_progress" or interview.room_ended_at:
         raise HTTPException(status_code=409, detail="The interview room is not active.")
     if not settings.judge0_api_url.strip():
@@ -493,14 +445,14 @@ async def run_code(interview_id: str, problem_id: str, data: RunInput, user: dic
 @router.get("/{interview_id}/room/submissions")
 async def list_submissions(interview_id: str, user: dict = Depends(get_current_user), db: AsyncSession = Depends(get_database)):
     interview, role = await _get_owned(db, interview_id, user)
+    if role != "recruiter":
+        raise HTTPException(status_code=403, detail="Interview results are available to the recruiter only.")
     query = select(InterviewCodeSubmission, InterviewCodingProblem).join(
         InterviewCodingProblem,
         InterviewCodeSubmission.problem_id == InterviewCodingProblem.id,
     ).where(InterviewCodeSubmission.interview_id == interview.id).order_by(InterviewCodeSubmission.created_at.desc()).limit(100)
-    if role == "candidate":
-        query = query.where(InterviewCodeSubmission.candidate_id == parse_uuid(user["id"], "user id"))
     rows = (await db.execute(query)).all()
-    return [{"id": str(item.id), "problem_id": str(item.problem_id), "question": problem.prompt, "language": item.language, "source_code": item.source_code if role == "recruiter" else None, "result": item.result, "is_final": item.is_final, "created_at": item.created_at.isoformat()} for item, problem in rows]
+    return [{"id": str(item.id), "problem_id": str(item.problem_id), "question": problem.prompt, "language": item.language, "source_code": item.source_code, "result": item.result or {}, "is_final": item.is_final, "created_at": item.created_at.isoformat()} for item, problem in rows]
 
 
 @router.post("/{interview_id}/room/activity")
@@ -508,6 +460,8 @@ async def log_activity(interview_id: str, data: EventInput, user: dict = Depends
     interview, role = await _get_owned(db, interview_id, user)
     if role != "candidate":
         raise HTTPException(status_code=403, detail="Only candidate browser-observable events are accepted here.")
+    if not await hub.has_participant(str(interview.id), str(user["id"])):
+        raise HTTPException(status_code=403, detail="Activity monitoring starts after the recruiter admits you.")
     if interview.status != "in_progress" or interview.room_ended_at:
         raise HTTPException(status_code=409, detail="Activity can only be recorded during an active interview.")
     if not (interview.extra_data or {}).get("candidate_room_consent", {}).get("accepted"):
@@ -526,6 +480,8 @@ async def log_activity(interview_id: str, data: EventInput, user: dict = Depends
 @router.get("/{interview_id}/room/activity")
 async def list_activity(interview_id: str, user: dict = Depends(get_current_user), db: AsyncSession = Depends(get_database)):
     interview, role = await _get_owned(db, interview_id, user)
+    if role != "recruiter":
+        raise HTTPException(status_code=403, detail="Interview activity reports are available to the recruiter only.")
     events = (await db.scalars(select(InterviewRoomEvent).where(InterviewRoomEvent.interview_id == interview.id).order_by(InterviewRoomEvent.occurred_at.desc()).limit(250))).all()
     return [{"id": str(event.id), "event_type": event.event_type, "occurred_at": event.occurred_at.isoformat(), "details": event.details, "actor_role": "candidate" if event.actor_id == interview.candidate_id else "recruiter"} for event in events]
 
@@ -581,7 +537,9 @@ async def interview_room_socket(websocket: WebSocket, interview_id: str):
         return
 
     room_id = str(interview_uuid)
-    await hub.connect(room_id, websocket, participant)
+    is_waiting_candidate = role == "candidate"
+    if not await hub.connect(room_id, websocket, participant, waiting=is_waiting_candidate):
+        return
     try:
         while True:
             message = await websocket.receive_json()
@@ -589,6 +547,20 @@ async def interview_room_socket(websocket: WebSocket, interview_id: str):
                 await websocket.send_json({"type": "error", "message": "Invalid or oversized room message."})
                 continue
             event_type = message.get("type")
+            if event_type == "admit_candidate":
+                if role != "recruiter":
+                    await websocket.send_json({"type": "error", "message": "Only the recruiter can admit a candidate."})
+                    continue
+                if interview.status != "in_progress" or interview.room_ended_at:
+                    await websocket.send_json({"type": "error", "message": "Start the interview before admitting the candidate."})
+                    continue
+                admitted = await hub.admit_candidate(room_id, str(interview.candidate_id))
+                if not admitted:
+                    await websocket.send_json({"type": "error", "message": "The candidate is not waiting to join."})
+                continue
+            if role == "candidate" and not await hub.is_admitted(room_id, websocket):
+                await websocket.send_json({"type": "error", "message": "Wait for the recruiter to admit you before using the interview room."})
+                continue
             if event_type in {"offer", "answer", "ice_candidate", "candidate_joined", "room_started", "coding_update"}:
                 if event_type == "coding_update" and (role != "candidate" or not isinstance(message.get("source_code"), str) or len(message["source_code"]) > 30000):
                     await websocket.send_json({"type": "error", "message": "Invalid live code update."})
