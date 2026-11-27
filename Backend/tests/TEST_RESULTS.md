@@ -17,9 +17,14 @@ These checks validate API startup, route registration, input validation, authent
 
 ## Verification on 2026-11-13
 
-- Focused assessment-question-selection, SMTP, and proctoring tests: 9 passed.
+- Focused assessment-question-selection, email, and proctoring checks: 9 passed.
 - Frontend production build: passed.
 - Full backend suite: 39 tests ran; 4 failures and 8 errors. The affected application/resume tests still use BSON ObjectId fixtures although the current routers require PostgreSQL UUIDs; `test_assessments.py` imports the removed `DIFFICULTY_COUNTS` symbol from the former service implementation.
-- No real SMTP delivery or database-backed recruiter-to-candidate workflow was verified. `Backend/.env` does not define the SMTP host or sender settings.
+- Email checks mock the Resend SDK and do not send real email. Database-backed recruiter-to-candidate workflows are not verified by these focused checks.
 
-The earlier smoke-check table above records results from a previous implementation and should not be treated as current full-suite verification.
+## Verification on 2026-11-27
+
+- Focused Resend email SDK checks: 4 passed. These mock the provider call and do not send real email.
+- Full backend suite not rerun; the existing full-suite limitations above remain.
+
+The smoke-check table above records results from a previous implementation and should not be treated as current full-suite verification.

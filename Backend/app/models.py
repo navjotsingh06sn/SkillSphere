@@ -556,7 +556,7 @@ class Interview(Base):
     candidate_response: Mapped[str | None] = mapped_column(String(40))
     notes: Mapped[str | None] = mapped_column(Text)
 
-    # SMTP email tracking
+    # Email delivery tracking
     email_status: Mapped[str] = mapped_column(
         String(30), default="pending", nullable=False
     )

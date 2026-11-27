@@ -23,7 +23,7 @@ from app.models import (
     User,
 )
 from app.pg_utils import parse_uuid, serialize_model
-from app.services.smtp import EmailDeliveryError, send_smtp_email
+from app.services.smtp import EmailDeliveryError, send_resend_email
 from app.schemas import (
     InterviewRescheduleInput,
     InterviewResponseInput,
@@ -195,7 +195,7 @@ async def deliver_interview_email(
             + "<p>Regards,<br>SkillSphere</p>"
         )
         try:
-            message_id = await send_smtp_email(
+            message_id = await send_resend_email(
                 candidate.email,
                 f"{title}: {job_title}",
                 text_content,

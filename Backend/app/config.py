@@ -27,13 +27,6 @@ class Settings(BaseSettings):
     admin_email: str = ""
     admin_password: str = ""
 
-    smtp_host: str = ""
-    smtp_port: int = 587
-    smtp_username: str = ""
-    smtp_password: str = ""
-    smtp_from_email: str = ""
-
-    smtp_from_name: str = "SkillSphere"
     resend_api_key: str = ""
     resend_from_email: str = ""
 

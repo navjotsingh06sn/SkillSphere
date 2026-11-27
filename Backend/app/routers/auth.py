@@ -23,7 +23,7 @@ from app.schemas import (
     ResetPasswordInput,
 )
 from app.security import create_access_token, hash_password, verify_password
-from app.services.smtp import EmailDeliveryError, send_smtp_email_sync
+from app.services.smtp import EmailDeliveryError, send_resend_email_sync
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +48,8 @@ def get_public_user(user: User) -> dict:
 
 
 def send_reset_email(email: str, token: str) -> None:
-    if not settings.smtp_host or not settings.smtp_from_email:
-        logger.warning("Password reset requested but SMTP is not configured.")
+    if not settings.resend_api_key or not settings.resend_from_email:
+        logger.warning("Password reset requested but Resend is not configured.")
         return
 
     reset_link = (
@@ -65,7 +65,7 @@ def send_reset_email(email: str, token: str) -> None:
         + reset_link
     )
     try:
-        send_smtp_email_sync(email, "Reset your SkillSphere password", text_content)
+        send_resend_email_sync(email, "Reset your SkillSphere password", text_content)
     except EmailDeliveryError:
         logger.exception("Could not send a SkillSphere password reset email.")
 

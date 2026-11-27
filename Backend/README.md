@@ -14,7 +14,7 @@ Edit .env before starting:
 - Use a private JWT_SECRET_KEY with at least 32 characters.
 - Set DATABASE_URL to a PostgreSQL connection string.
 - Optionally set ADMIN_EMAIL and ADMIN_PASSWORD to bootstrap the first admin.
-- Interview invitations and shortlist notifications use the existing SMTP settings: SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, SMTP_FROM_EMAIL, and optional SMTP_FROM_NAME.
+- Transactional email uses Resend over HTTPS. Set `RESEND_API_KEY` and `RESEND_FROM_EMAIL` to a sender verified with Resend.
 - For Round 1 video uploads, set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET. Keep the API secret in Backend/.env only; do not add it to frontend environment variables.
 
 Then run:
@@ -34,13 +34,13 @@ Recruiter coding questions are stored in the reusable coding question bank and c
 
 WebRTC peer-to-peer calls can fail across restrictive NATs. For production availability, deploy TURN (for example, coturn) and provide short-lived TURN credentials to the browser through an authenticated credential endpoint; do not place a TURN shared secret in `VITE_*` variables. The current room signaling hub is process-local, so run one API worker for rooms until the hub is moved to Redis/pub-sub. A self-hosted TURN service and Judge0 runner are infrastructure requirements, not bundled with SkillSphere.
 
-Interview invitations and shortlist notifications use SMTP. If SMTP is unavailable or rejects a message, the database change remains saved and its email status and failure reason are tracked; only failed messages can be retried from the relevant recruiter view.
+Interview invitations and shortlist notifications use Resend. If the provider rejects a message, the database change remains saved and its email status and safe failure reason are tracked; only failed messages can be retried from the relevant recruiter view.
 
 ## Round 1 camera monitoring and recording
 
 Candidates grant camera and screen-share permission and explicit consent before starting or resuming a Round 1 attempt. Face-presence and multiple-face checks still run locally in the browser using MediaPipe. Camera video recording starts with the attempt and stops on submit or timeout. The assessment never submits because of warnings; it continues until the candidate submits or the server-enforced deadline expires. Tab/window focus losses and proctoring warnings are timestamped. The browser keeps a local retry copy when browser storage permits, until Cloudinary confirms the upload; successful uploads are stored as authenticated Cloudinary assets. Only the recruiter responsible for the candidate’s application can request a five-minute playback URL. Recruiters can delete uploaded recordings from the assessment review page. Recordings remain until explicitly deleted; automatic expiration is not configured.
 
-Cloudinary credentials are optional at startup. If they are missing or invalid, the API remains available, uploads show a failure state, and the candidate can retry after configuration. Add the three Cloudinary values to Backend/.env and install the backend requirements to enable uploads. The API key and signature are used only for the direct signed upload; the API secret never leaves the backend. Existing SMTP email delivery is unchanged. No Video Assessment or LiveKit recording pipeline is part of this Round 1 integration.
+Cloudinary credentials are optional at startup. If they are missing or invalid, the API remains available, uploads show a failure state, and the candidate can retry after configuration. Add the three Cloudinary values to Backend/.env and install the backend requirements to enable uploads. The API key and signature are used only for the direct signed upload; the API secret never leaves the backend. Resend email delivery is unchanged. No Video Assessment or LiveKit recording pipeline is part of this Round 1 integration.
 
 Apply the additive database migrations before using the assessment, proctoring, and recording APIs:
 
@@ -77,7 +77,7 @@ See tests/TEST_RESULTS.md for the latest test results and any database limitatio
 
 ## Email delivery
 
-Local development can continue using SMTP (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, and `SMTP_FROM_EMAIL`). Render Free blocks outbound SMTP ports 25, 465, and 587, so configure an HTTPS mail provider for that deployment. The backend supports Resend over HTTPS: set `RESEND_API_KEY` and `RESEND_FROM_EMAIL` to a sender address verified with Resend. When `RESEND_API_KEY` is present, interview and other existing email workflows use the HTTPS API instead of SMTP. Keep the API key only in backend environment variables; never put it in the frontend. Existing failed interview emails can then be retried from the recruiter dashboard.
+All email workflows use the official Resend Python SDK over HTTPS, including password resets, interview invitations, and shortlist notices. Set `RESEND_API_KEY` and `RESEND_FROM_EMAIL` in the backend environment. The sender must be verified with Resend. Keep the API key only in backend environment variables; never put it in the frontend. Failed interview and shortlist emails can be retried from the recruiter dashboard.
 
 
 ### Proctoring evidence
