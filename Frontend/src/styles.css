@@ -803,8 +803,6 @@ body { background-image: radial-gradient(ellipse at 6% 3%, color-mix(in srgb, va
 .room-code-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 .room-code-actions button { display: inline-flex; align-items: center; gap: 7px; }
 .room-run-result { display: grid; gap: 8px; margin-top: 14px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; }
-.room-test-pass, .room-test-fail { display: grid; gap: 5px; border-top: 1px solid var(--border); padding: 8px 0; font-size: 12px; }
-.room-test-pass > span { color: #218657; }.room-test-fail > span { color: var(--error); }
 .room-run-result pre { max-height: 150px; overflow: auto; margin: 0; white-space: pre-wrap; }
 .room-recruiter-tools { display: grid; }
 .room-problem-choice, .room-submission-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
@@ -817,7 +815,6 @@ body { background-image: radial-gradient(ellipse at 6% 3%, color-mix(in srgb, va
 .room-submission-detail > p { margin: 0; white-space: pre-wrap; font-size: 12px; line-height: 1.55; }
 .room-submission-detail > details > summary { cursor: pointer; color: var(--accent); font-size: 11px; }
 .room-submitted-code { max-height: 360px; overflow: auto; padding: 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-2); white-space: pre-wrap; font-size: 11px; }
-.room-submission-tests { display: grid; gap: 7px; }
 .room-problem-form { display: grid; gap: 12px; margin: 16px 0; }
 .room-event-list { display: grid; gap: 7px; margin: 0; padding-left: 22px; }
 .room-event-list li { display: grid; grid-template-columns: minmax(110px, auto) 1fr; gap: 8px; border-bottom: 1px solid var(--border); padding: 9px 0; font-size: 12px; }

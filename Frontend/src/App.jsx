@@ -901,7 +901,7 @@ function InterviewManagementPage({ codingBankOnly = false }) {
   const [form, setForm] = useState({ scheduled_at: "", duration_minutes: "30", mode: "in_platform", meeting_link: "", location: "", notes: "" });
   const [codingQuestions, setCodingQuestions] = useState([]);
   const [codingLanguages, setCodingLanguages] = useState({ language_ids: {}, language_labels: {} });
-  const [codingQuestionForm, setCodingQuestionForm] = useState({ question: "", allowed_languages: ["python", "javascript"], time_limit_seconds: "1800", test_cases: "[]" });
+  const [codingQuestionForm, setCodingQuestionForm] = useState({ question: "", allowed_languages: ["python", "javascript"], time_limit_seconds: "1800" });
   const [codingQuestionBusy, setCodingQuestionBusy] = useState(false);
 
   async function load() {
@@ -942,13 +942,12 @@ function InterviewManagementPage({ codingBankOnly = false }) {
         body: json({
           ...codingQuestionForm,
           time_limit_seconds: Number(codingQuestionForm.time_limit_seconds),
-          test_cases: JSON.parse(codingQuestionForm.test_cases),
         }),
       });
       setCodingQuestions(current => [saved, ...current]);
-      setCodingQuestionForm(current => ({ ...current, question: "", test_cases: "[]" }));
+      setCodingQuestionForm(current => ({ ...current, question: "" }));
     } catch (err) {
-      setError(err.message.includes("JSON") ? "Test cases must be valid JSON with input and expected_output fields." : err.message);
+      setError(err.message);
     } finally {
       setCodingQuestionBusy(false);
     }
@@ -1021,15 +1020,14 @@ function InterviewManagementPage({ codingBankOnly = false }) {
     <Notice>{error}</Notice>
     {isRecruiter && <section className="panel coding-bank-manager">
       <div className="panel-heading"><div><span className="eyebrow">REUSABLE LIVE CODING</span><h3>Coding question bank</h3></div><span className="status status-shortlisted">{codingQuestions.length} saved</span></div>
-      <p>Write a question once and reuse it in any shortlisted candidate’s live interview room. Test cases stay private from candidates.</p>
+      <p>Write a question once and reuse it in any shortlisted candidate’s live interview room. Candidates run their code directly and recruiters can review the output.</p>
       <form className="edit-form" onSubmit={saveCodingQuestion}>
         <label>Question<textarea required minLength="10" maxLength="12000" rows="5" placeholder="Write the coding question exactly as the candidate should see it" value={codingQuestionForm.question} onChange={event => setCodingQuestionForm({ ...codingQuestionForm, question: event.target.value })} /></label>
         <div className="coding-language-checklist"><b>Allowed languages</b><div>{Object.keys(codingLanguages.language_ids || {}).map(language => <label key={language}><input type="checkbox" checked={codingQuestionForm.allowed_languages.includes(language)} onChange={event => setCodingQuestionForm(current => ({ ...current, allowed_languages: event.target.checked ? [...current.allowed_languages, language] : current.allowed_languages.filter(item => item !== language) }))} />{codingLanguages.language_labels?.[language] || language}</label>)}</div></div>
-        <div className="form-grid"><label>Time limit (seconds)<input type="number" min="60" max="7200" value={codingQuestionForm.time_limit_seconds} onChange={event => setCodingQuestionForm({ ...codingQuestionForm, time_limit_seconds: event.target.value })} /></label>
-          <label>Private test cases (JSON)<small>At least one input and expected_output pair is required</small><textarea required rows="4" value={codingQuestionForm.test_cases} onChange={event => setCodingQuestionForm({ ...codingQuestionForm, test_cases: event.target.value })} /></label></div>
+        <label>Time limit (seconds)<input type="number" min="60" max="7200" value={codingQuestionForm.time_limit_seconds} onChange={event => setCodingQuestionForm({ ...codingQuestionForm, time_limit_seconds: event.target.value })} /></label>
         <button className="button button-primary" disabled={codingQuestionBusy || !codingQuestionForm.allowed_languages.length}>{codingQuestionBusy ? "Saving question…" : "Save to question bank"}</button>
       </form>
-      {codingQuestions.length > 0 && <div className="coding-bank-list">{codingQuestions.map(question => <details className="coding-bank-item" key={question.id}><summary><span>{question.question.slice(0, 110)}{question.question.length > 110 ? "…" : ""}</span><small>{question.test_case_count} tests · {Math.floor(question.time_limit_seconds / 60)} min</small></summary><p>{question.question}</p><small>{question.allowed_languages.map(language => codingLanguages.language_labels?.[language] || language).join(" · ")}</small></details>)}</div>}
+      {codingQuestions.length > 0 && <div className="coding-bank-list">{codingQuestions.map(question => <details className="coding-bank-item" key={question.id}><summary><span>{question.question.slice(0, 110)}{question.question.length > 110 ? "…" : ""}</span><small>{Math.floor(question.time_limit_seconds / 60)} min</small></summary><p>{question.question}</p><small>{question.allowed_languages.map(language => codingLanguages.language_labels?.[language] || language).join(" · ")}</small></details>)}</div>}
     </section>}
     {!codingBankOnly && (items.length ? <div className="interview-list">{items.map(interview => <section className="panel interview-card" key={interview.id}>
       <div className="panel-heading"><div><span className="eyebrow">{interview.interview_type} · {interview.mode}</span><h3>{interview.job?.title || "Interview"}</h3></div><span className={"status status-" + interview.status}>{interview.status}</span></div>

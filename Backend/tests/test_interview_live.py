@@ -69,7 +69,6 @@ class InterviewLiveAuthorizationTests(unittest.TestCase):
         question = ProblemInput(
             question="Write a function that returns the longest unique substring.",
             allowed_languages=["python", "rust", "typescript", "csharp"],
-            test_cases=[{"input": "abba", "expected_output": "2"}],
         )
         self.assertEqual(question.question.startswith("Write a function"), True)
         self.assertTrue({"rust", "typescript", "csharp"}.issubset(_language_ids()))
@@ -77,7 +76,6 @@ class InterviewLiveAuthorizationTests(unittest.TestCase):
         legacy_payload = ProblemInput(
             prompt="Return the longest unique substring length.",
             title="Legacy title is ignored by the candidate UI",
-            test_cases=[{"input": "abc", "expected_output": "3"}],
         )
         self.assertEqual(legacy_payload.question, "Return the longest unique substring length.")
 

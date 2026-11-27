@@ -44,7 +44,6 @@ class ProblemInput(BaseModel):
     )
     allowed_languages: list[str] = Field(default_factory=lambda: ["python", "javascript"], min_length=1, max_length=12)
     time_limit_seconds: int = Field(default=1800, ge=60, le=7200)
-    test_cases: list[dict[str, str]] = Field(min_length=1, max_length=20)
 
     @field_validator("question")
     @classmethod
@@ -58,6 +57,7 @@ class ProblemInput(BaseModel):
 class RunInput(BaseModel):
     language: str = Field(max_length=40)
     source_code: str = Field(min_length=1, max_length=30000)
+    stdin: str = Field(default="", max_length=4000)
     final: bool = False
 
 
@@ -150,21 +150,11 @@ def _problem_title(question: str) -> str:
     return first_line[:200]
 
 
-def _clean_test_cases(test_cases: list[dict[str, str]]) -> list[dict[str, str]]:
-    clean_cases = []
-    for case in test_cases:
-        if set(case) != {"input", "expected_output"} or len(case["input"]) > 4000 or len(case["expected_output"]) > 4000:
-            raise HTTPException(status_code=422, detail="Each test case must contain input and expected output (up to 4,000 characters each).")
-        clean_cases.append({"input": case["input"], "expected_output": case["expected_output"]})
-    return clean_cases
-
-
 def _question_payload(problem: InterviewCodingProblem) -> dict:
     return {
         "id": str(problem.id), "question": problem.prompt, "title": problem.title,
         "allowed_languages": problem.allowed_languages,
         "time_limit_seconds": problem.time_limit_seconds,
-        "test_case_count": len(problem.test_cases or []),
         "created_at": problem.created_at.isoformat() if problem.created_at else None,
     }
 
@@ -193,7 +183,7 @@ async def get_room(interview_id: str, user: dict = Depends(get_current_user), db
         "recruiter": {"id": str(recruiter.id), "full_name": recruiter.full_name} if recruiter else None,
         "application_id": str(application.id) if application else None,
         "candidate_room_consent": extra.get("candidate_room_consent", {"accepted": False}),
-        "problems": [{"id": str(problem.id), "title": problem.title, "question": problem.prompt, "prompt": problem.prompt, "allowed_languages": problem.allowed_languages, "time_limit_seconds": problem.time_limit_seconds, "test_case_count": len(problem.test_cases or [])} for problem in problems],
+        "problems": [{"id": str(problem.id), "title": problem.title, "question": problem.prompt, "prompt": problem.prompt, "allowed_languages": problem.allowed_languages, "time_limit_seconds": problem.time_limit_seconds} for problem in problems],
         "language_ids": _language_ids(), "language_labels": LANGUAGE_NAMES, "feedback": feedback_payload,
     }
 
@@ -309,7 +299,6 @@ async def create_coding_bank_question(data: ProblemInput, user: dict = Depends(r
         prompt=data.question.strip(),
         allowed_languages=data.allowed_languages,
         time_limit_seconds=data.time_limit_seconds,
-        test_cases=_clean_test_cases(data.test_cases),
     )
     db.add(problem)
     await db.commit()
@@ -349,7 +338,6 @@ async def send_coding_bank_question(interview_id: str, question_id: str, user: d
         prompt=bank_question.prompt,
         allowed_languages=allowed_languages,
         time_limit_seconds=bank_question.time_limit_seconds,
-        test_cases=bank_question.test_cases,
     )
     db.add(problem)
     await db.flush()
@@ -380,7 +368,6 @@ async def create_problem(interview_id: str, data: ProblemInput, user: dict = Dep
     languages = _language_ids()
     if any(language not in languages for language in data.allowed_languages):
         raise HTTPException(status_code=422, detail="Choose languages enabled by the configured code sandbox.")
-    clean_cases = _clean_test_cases(data.test_cases)
     recruiter_id = parse_uuid(user["id"], "recruiter id")
     question_text = data.question.strip()
 
@@ -388,7 +375,7 @@ async def create_problem(interview_id: str, data: ProblemInput, user: dict = Dep
         interview_id=None, created_by=recruiter_id,
         title=_problem_title(question_text), prompt=question_text,
         allowed_languages=data.allowed_languages,
-        time_limit_seconds=data.time_limit_seconds, test_cases=clean_cases,
+        time_limit_seconds=data.time_limit_seconds,
     )
     db.add(bank_question)
     await db.flush()
@@ -396,7 +383,7 @@ async def create_problem(interview_id: str, data: ProblemInput, user: dict = Dep
         interview_id=interview.id, created_by=recruiter_id,
         title=bank_question.title, prompt=question_text,
         allowed_languages=data.allowed_languages,
-        time_limit_seconds=data.time_limit_seconds, test_cases=clean_cases,
+        time_limit_seconds=data.time_limit_seconds,
     )
     db.add(problem)
     await db.flush()
@@ -432,7 +419,7 @@ async def activate_problem(interview_id: str, problem_id: str, user: dict = Depe
     extra["active_coding_problem"] = active_problem
     interview.extra_data = extra
     await db.commit()
-    payload = {"id": str(problem.id), "title": problem.title, "prompt": problem.prompt, "allowed_languages": problem.allowed_languages, "time_limit_seconds": problem.time_limit_seconds, "test_case_count": len(problem.test_cases or []), **active_problem}
+    payload = {"id": str(problem.id), "title": problem.title, "question": problem.prompt, "prompt": problem.prompt, "allowed_languages": problem.allowed_languages, "time_limit_seconds": problem.time_limit_seconds, **active_problem}
     await hub.broadcast(str(interview.id), {"type": "problem_activated", "problem": payload})
     return payload
 
@@ -458,33 +445,42 @@ async def run_code(interview_id: str, problem_id: str, data: RunInput, user: dic
     language_ids = _language_ids()
     if data.language not in problem.allowed_languages or data.language not in language_ids:
         raise HTTPException(status_code=422, detail="This language is not allowed for the selected problem.")
-    cases = problem.test_cases or []
-    if not cases:
-        raise HTTPException(status_code=409, detail="The recruiter has not added any test cases to this problem.")
     headers = {"Content-Type": "application/json"}
     if settings.judge0_api_key.strip():
         headers["X-Auth-Token"] = settings.judge0_api_key.strip()
     base_url = settings.judge0_api_url.strip().rstrip("/")
-    execution_slots = asyncio.Semaphore(4)
-    async def execute_case(case):
-        async with execution_slots:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(f"{base_url}/submissions?base64_encoded=false&wait=true", headers=headers, json={"language_id": language_ids[data.language], "source_code": data.source_code, "stdin": case["input"], "cpu_time_limit": 3, "wall_time_limit": 5, "memory_limit": 128000, "max_processes_and_or_threads": 32})
-                response.raise_for_status()
-                result = response.json()
-                stdout = (result.get("stdout") or "").strip()
-                stderr = (result.get("stderr") or result.get("compile_output") or "").strip()
-                passed = result.get("status", {}).get("id") == 3 and stdout == case["expected_output"].strip()
-                return {"passed": passed, "stdout": stdout[:8000], "stderr": stderr[:8000], "status": result.get("status", {}).get("description", "Unknown"), "time": result.get("time"), "memory": result.get("memory")}
     try:
-        results = await asyncio.gather(*(execute_case(case) for case in cases))
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{base_url}/submissions?base64_encoded=false&wait=true",
+                headers=headers,
+                json={
+                    "language_id": language_ids[data.language],
+                    "source_code": data.source_code,
+                    "stdin": data.stdin,
+                    "cpu_time_limit": 3,
+                    "wall_time_limit": 5,
+                    "memory_limit": 128000,
+                    "max_processes_and_or_threads": 32,
+                },
+            )
+            response.raise_for_status()
+            runner_result = response.json()
     except httpx.TimeoutException as exc:
         raise HTTPException(status_code=504, detail="The isolated code runner timed out. Try again with a smaller program.") from exc
     except httpx.HTTPError as exc:
         logger.exception("Interview sandbox request failed")
         raise HTTPException(status_code=502, detail="The isolated code runner is temporarily unavailable.") from exc
-    passed_count = sum(result["passed"] for result in results)
-    summary = {"passed": passed_count, "total": len(results), "all_passed": passed_count == len(results), "tests": results}
+    runner_status = runner_result.get("status") or {}
+    summary = {
+        "status": runner_status.get("description", "Unknown"),
+        "status_id": runner_status.get("id"),
+        "successful": runner_status.get("id") == 3,
+        "stdout": (runner_result.get("stdout") or "")[:8000],
+        "stderr": (runner_result.get("stderr") or runner_result.get("compile_output") or "")[:8000],
+        "time": runner_result.get("time"),
+        "memory": runner_result.get("memory"),
+    }
     submission = InterviewCodeSubmission(interview_id=interview.id, problem_id=problem.id, candidate_id=parse_uuid(user["id"], "user id"), language=data.language, source_code=data.source_code, result=summary, is_final=data.final)
     db.add(submission)
     await db.commit()

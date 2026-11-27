@@ -44,7 +44,10 @@ def interview_room_url(interview_id: UUID) -> str:
 def validate_interview_eligibility(application: Application) -> None:
     # Selection is the recruiter decision that unlocks interview scheduling.
     # Assessment screening is optional and must not block this workflow.
-    if application.status not in ("selected", "shortlisted"):
+    # Scheduling sets the application status to "interview". Keep that status
+    # eligible so a recruiter can schedule a follow-up after an earlier
+    # interview is completed or cancelled.
+    if application.status not in ("selected", "shortlisted", "interview"):
         raise HTTPException(
             status_code=409,
             detail="Select the candidate before scheduling an interview.",
