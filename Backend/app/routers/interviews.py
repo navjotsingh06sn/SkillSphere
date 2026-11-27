@@ -23,7 +23,7 @@ from app.models import (
     User,
 )
 from app.pg_utils import parse_uuid, serialize_model
-from app.services.smtp import EmailDeliveryError, send_resend_email
+from app.services.email_delivery import EmailDeliveryError, send_resend_email
 from app.schemas import (
     InterviewRescheduleInput,
     InterviewResponseInput,

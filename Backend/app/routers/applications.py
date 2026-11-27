@@ -32,7 +32,7 @@ from app.schemas import (
     ApplicationStatusInput,
     ReconsiderationInput,
 )
-from app.services.smtp import EmailDeliveryError, send_resend_email
+from app.services.email_delivery import EmailDeliveryError, send_resend_email
 
 logger = logging.getLogger(__name__)
 

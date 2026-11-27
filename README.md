@@ -4,7 +4,7 @@ SkillSphere is a full-stack career and recruitment platform using React, FastAPI
 
 ## What is implemented
 
-- Candidate and recruiter registration/login with Argon2 password hashing, JWT auth, role checks, token-invalidating logout, SMTP-based password reset, account status, and admin bootstrap from environment variables.
+- Candidate and recruiter registration/login with Argon2 password hashing, JWT auth, role checks, token-invalidating logout, Resend-based password reset, account status, and admin bootstrap from environment variables.
 - Candidate profile editing and dashboard, document-based profile prefill with reviewed OCR results, resume uploads with size/type checks, private downloads, asynchronous PDF/image OCR, and analysis history.
 - Job publishing/search/detail, saved jobs, application submission with duplicate protection, application tracking and withdrawal.
 - Recruiter company profile, job management, applicant review, resume access, and application status changes.
@@ -44,15 +44,15 @@ For a Render static-site build, set `VITE_API_URL` in the frontend service to th
 
 ## Database and initial admin
 
-The default local database name is skillsphere_db. Apply additive schema migrations with `alembic upgrade head`. For a first admin, set ADMIN_EMAIL and ADMIN_PASSWORD in Backend/.env, then restart the backend. Admin registration is not public. Configure SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, SMTP_FROM_EMAIL, and optional SMTP_FROM_NAME to enable password-reset, interview, and shortlisting email delivery.
+The default local database name is skillsphere_db. Apply additive schema migrations with `alembic upgrade head`. For a first admin, set ADMIN_EMAIL and ADMIN_PASSWORD in Backend/.env, then restart the backend. Admin registration is not public. Configure `RESEND_API_KEY` and `RESEND_FROM_EMAIL` in the backend environment to enable password-reset, interview, and shortlisting email delivery.
 
 ## Neon Postgres
 
-The backend uses its existing FastAPI, SQLAlchemy async, and asyncpg stack. Neon CLI writes branch connection variables to the root `.env.local`, which is ignored by Git. The backend loads that file after `Backend/.env`, so Neon connection values take precedence without replacing SMTP, JWT, Cloudinary, or AI settings. Web requests use Neon’s pooled `DATABASE_URL`; Alembic uses `DATABASE_URL_UNPOOLED` for schema migrations. Both connection URL formats are normalized for asyncpg.
+The backend uses its existing FastAPI, SQLAlchemy async, and asyncpg stack. Neon CLI writes branch connection variables to the root `.env.local`, which is ignored by Git. The backend loads that file after `Backend/.env`, so Neon connection values take precedence without replacing Resend, JWT, Cloudinary, or AI settings. Web requests use Neon’s pooled `DATABASE_URL`; Alembic uses `DATABASE_URL_UNPOOLED` for schema migrations. Both connection URL formats are normalized for asyncpg.
 
 The candidate chatbot uses `CHATBOT_AI_BASE_URL`, `CHATBOT_AI_API_KEY`, and `CHATBOT_AI_MODEL` when all three are configured. Otherwise it reuses the backend-only `ASSESSMENT_AI_*` provider settings. Keep API keys in `Backend/.env`; they are never sent to the browser. The chatbot sends the candidate’s name with each AI request and includes application details only for application-related questions.
 
-For local email delivery, configure the `SMTP_*` values in `Backend/.env`. Render Free blocks outbound SMTP ports 25, 465, and 587, so configure `RESEND_API_KEY` and a verified `RESEND_FROM_EMAIL` in the backend service environment to send through HTTPS. When the Resend key is set, it takes precedence over SMTP. Keep it in backend environment variables only.
+Email delivery uses the official Resend Python SDK over HTTPS in local and hosted environments. Configure `RESEND_API_KEY` and a verified `RESEND_FROM_EMAIL` in the backend environment. Keep the API key in backend environment variables only.
 
 After provisioning the Neon branch, run `alembic upgrade head` from `Backend` (or activate the backend environment and run the same command), then start the API as usual.
 
@@ -76,7 +76,7 @@ Frontend production build:
 
     npm run build
 
-Backend tests and their latest results are listed in Backend/tests/TEST_RESULTS.md. Database-backed workflows require a reachable PostgreSQL instance. Configure SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, SMTP_FROM_EMAIL, and optional SMTP_FROM_NAME in Backend/.env to enable interview, shortlisting, and password-reset emails.
+Backend tests and their latest results are listed in Backend/tests/TEST_RESULTS.md. Database-backed workflows require a reachable PostgreSQL instance. Configure `RESEND_API_KEY` and `RESEND_FROM_EMAIL` in Backend/.env to enable interview, shortlisting, and password-reset emails.
 
 ## Security notes
 
